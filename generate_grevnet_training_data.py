@@ -58,7 +58,7 @@ values_map = {
 batch_num = 0
 num_examples = 0
 file_number = 0
-filename_prefix = os.environ.get('MLPATH')
+filename_prefix = os.environ.get('MLPATH', '.')
 filename_template_str = "{}_{}_{{}}.{}"
 filename_template = filename_template_str.format(
     FLAGS.output_file, FLAGS.run_number,
@@ -74,19 +74,12 @@ total_n_node = 0
 node_embeddings = np.empty([0, FLAGS.node_embedding_dim])
 n_node = np.empty([0], dtype=np.int32)
 
-# TODO(jyliu): change this
-while True:
-    generated_enough_examples = num_examples > FLAGS.num_examples
-    filename_maxed_out = total_n_node * FLAGS.node_embedding_dim * 4 > 100e6 if FLAGS.output_pickled else os.path.getsize(
-        filename) > 100e6
-    if generated_enough_examples and filename_maxed_out:
-        break
+while num_examples <= FLAGS.num_examples:
     if not FLAGS.output_pickled and os.path.getsize(filename) > 100e6:
         writer.close()
         file_number += 1
         filename = filename_template.format(file_number)
-        if not FLAGS.output_pickled:
-            writer = tf.io.TFRecordWriter(filename)
+        writer = tf.io.TFRecordWriter(filename)
     elif FLAGS.output_pickled and total_n_node * FLAGS.node_embedding_dim * 4 > 100e6:
         with open(filename, 'wb') as f:
             pickle.dump((node_embeddings, n_node), f)
@@ -140,5 +133,10 @@ while True:
         print("n node {}".format(graphs_tuple.n_node))
         print("node embeddings {}".format(graphs_tuple.nodes))
     batch_num += 1
-if not FLAGS.output_pickled:
+
+# Flush remaining in-memory data.
+if FLAGS.output_pickled and len(n_node) > 0:
+    with open(filename, 'wb') as f:
+        pickle.dump((node_embeddings, n_node), f)
+elif not FLAGS.output_pickled:
     writer.close()

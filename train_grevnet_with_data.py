@@ -18,7 +18,6 @@ from absl import flags
 import graph_nets as gn
 import tensorflow as tf
 import tensorflow_probability as tfp
-import tensorflow.python.debug as tf_debug
 tfd = tfp.distributions
 import absl.logging
 logging.root.removeHandler(absl.logging._absl_handler)
@@ -123,12 +122,12 @@ logdir_prefix = os.environ.get('MLPATH')
 if not logdir_prefix:
     logdir_prefix = '.'
 LOGDIR = os.path.join(logdir_prefix, FLAGS.logdir)
-os.makedirs(LOGDIR)
+os.makedirs(LOGDIR, exist_ok=True)
 GRAPHS_LOGDIR = os.path.join(LOGDIR, "generated_graphs")
-os.makedirs(GRAPHS_LOGDIR)
+os.makedirs(GRAPHS_LOGDIR, exist_ok=True)
 if FLAGS.debug_grads:
     grads_folder = os.path.join(LOGDIR, "grads")
-    os.makedirs(grads_folder)
+    os.makedirs(grads_folder, exist_ok=True)
 
 # Logging and print options.
 np.set_printoptions(suppress=True, formatter={'float': '{: 0.3f}'.format})
@@ -415,6 +414,10 @@ sample_grevnet_top = grevnet(sample_graphs_tuple, inverse=False)
 sample_pred_adj = pred_adj(sample_grevnet_top,
                            distance_fn=scaled_hacky_sigmoid_l2)
 
+tf.add_to_collection('sample_pred_adj', sample_pred_adj)
+tf.add_to_collection('sample_log_prob', sample_log_prob)
+tf.add_to_collection('sample_n_node', sample_n_node_placeholder)
+
 tf.summary.scalar('total_loss', total_loss)
 tf.summary.scalar('per_node_loss', per_node_loss)
 tf.summary.scalar('log_prob_xs', log_prob_xs)
@@ -515,7 +518,7 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
     # Write out graphs.
     if iteration % FLAGS.write_graphs_every_n_steps == 0 and iteration > FLAGS.write_graphs_min_iter:
         graphs_dir = os.path.join(GRAPHS_LOGDIR, "iter_{}".format(iteration))
-        os.makedirs(graphs_dir)
+        os.makedirs(graphs_dir, exist_ok=True)
         feed_dict = {
             sample_n_node_placeholder:
             random.sample(FLAGS.sample_size * dataset.test_n_nodes(),
