@@ -537,7 +537,7 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
             end_ind = n_node_cum[i]
             num_nodes = end_ind - start_ind
             graph = adjacency[start_ind:end_ind, start_ind:end_ind]
-            graph = nx.convert_matrix.from_numpy_matrix(graph)
+            graph = nx.from_numpy_array(graph)
             single_sample_log_prob = np.mean(
                 sample_log_prob[start_ind:end_ind])
             visualize_graph(graph,

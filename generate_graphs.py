@@ -72,7 +72,7 @@ while iteration < FLAGS.number_to_generate:
     for i in range(BATCH_SIZE):
         end_ind = n_node_cum[i]
         graph = adjacency[start_ind:end_ind, start_ind:end_ind]
-        graph = nx.convert_matrix.from_numpy_matrix(graph)
+        graph = nx.from_numpy_array(graph)
         log_prob_graph = np.sum(log_probs[start_ind:end_ind]) / (end_ind - start_ind)
         graphs.append(graph)
         start_ind = end_ind
