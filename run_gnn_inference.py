@@ -151,9 +151,9 @@ for i in range(FLAGS.num_train_iters):
         false_positives_mat = pred_mat - correct_edges_mat
         false_negatives_mat = true_mat - correct_edges_mat
         complete_mat = correct_edges_mat + 2 * false_positives_mat + 3 * false_negatives_mat
-        complete_graph = nx.from_numpy_matrix(complete_mat)
+        complete_graph = nx.from_numpy_array(complete_mat)
         complete_graphs.append(complete_graph)
-        pred_graph = nx.from_numpy_matrix(pred_mat)
+        pred_graph = nx.from_numpy_array(pred_mat)
         pred_graphs.append(pred_graph)
         start = end
 

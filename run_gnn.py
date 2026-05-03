@@ -255,13 +255,13 @@ elif FLAGS.loss_type == 'binary':
     true_adj, pred_adj, unreduced_loss, sum_loss, mean_loss = binary_loss(
         gnn_output, true_graph_phs, binary_dist_fn, FLAGS.use_soft_labels)
 
-total_incorrect_edges = total_incorrect_edges(true_adj, pred_adj)
-incorrect_edges_per_node = total_incorrect_edges / tf.cast(
+total_incorrect_edges_tensor = total_incorrect_edges(true_adj, pred_adj)
+incorrect_edges_per_node = total_incorrect_edges_tensor / tf.cast(
     tf.reduce_sum(true_graph_phs.n_node), dtype=tf.float32)
-incorrect_edges_per_graph = incorrect_edges_per_graph(true_adj, pred_adj,
-                                                      true_graph_phs.n_node)
-false_positive_edges = false_positive_edges(true_adj, pred_adj)
-false_negative_edges = false_negative_edges(true_adj, pred_adj)
+incorrect_edges_per_graph_tensor = incorrect_edges_per_graph(true_adj, pred_adj,
+                                                             true_graph_phs.n_node)
+false_positive_edges_tensor = false_positive_edges(true_adj, pred_adj)
+false_negative_edges_tensor = false_negative_edges(true_adj, pred_adj)
 regularizer_loss = 0
 regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 if len(regularization_losses) > 0:
@@ -298,13 +298,13 @@ with tf.control_dependencies(tf.get_collection(tf.GraphKeys.UPDATE_OPS)):
 sum_loss_summary = tf.summary.scalar('sum_loss', sum_loss)
 mean_loss_summary = tf.summary.scalar('mean_loss', mean_loss)
 total_incorrect_edges_summary = tf.summary.scalar('total_incorrect_edges',
-                                                  total_incorrect_edges)
+                                                  total_incorrect_edges_tensor)
 incorrect_edges_per_node_summary = tf.summary.scalar(
     'incorrect_edges_per_node', incorrect_edges_per_node)
 false_positive_edges_summary = tf.summary.scalar('false_positive_edges',
-                                                 false_positive_edges)
+                                                 false_positive_edges_tensor)
 false_negative_edges_summary = tf.summary.scalar('false_negative_edges',
-                                                 false_negative_edges)
+                                                 false_negative_edges_tensor)
 lr_summary = tf.summary.scalar('learning_rate', lr)
 
 train_summaries = tf.summary.merge_all()
@@ -340,11 +340,11 @@ values_map = {
     "true_adj": true_adj,
     "pred_adj": pred_adj,
     "norm_gnn_output": norm_gnn_output,
-    "total_incorrect_edges": total_incorrect_edges,
+    "total_incorrect_edges": total_incorrect_edges_tensor,
     "incorrect_edges_per_node": incorrect_edges_per_node,
-    "incorrect_edges_per_graph": incorrect_edges_per_graph,
-    "false_positive_edges": false_positive_edges,
-    "false_negative_edges": false_negative_edges,
+    "incorrect_edges_per_graph": incorrect_edges_per_graph_tensor,
+    "false_positive_edges": false_positive_edges_tensor,
+    "false_negative_edges": false_negative_edges_tensor,
     "temp": temp,
     "shift": shift,
 }
@@ -357,11 +357,11 @@ eval_values_map = {
     "eval_summaries": eval_summaries,
     "eval_mean_loss": mean_loss,
     "eval_sum_loss": sum_loss,
-    "eval_total_incorrect_edges": total_incorrect_edges,
+    "eval_total_incorrect_edges": total_incorrect_edges_tensor,
     "eval_incorrect_edges_per_node": incorrect_edges_per_node,
-    "eval_incorrect_edges_per_graph": incorrect_edges_per_graph,
-    "eval_false_positive_edges": false_positive_edges,
-    "eval_false_negative_edges": false_negative_edges,
+    "eval_incorrect_edges_per_graph": incorrect_edges_per_graph_tensor,
+    "eval_false_positive_edges": false_positive_edges_tensor,
+    "eval_false_negative_edges": false_negative_edges_tensor,
     "eval_true_graph_phs": true_graph_phs,
 }
 if distances is not None:
