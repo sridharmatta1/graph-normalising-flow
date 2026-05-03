@@ -27,6 +27,33 @@ def add_gaussian_noise_features(graph, num_components=5, scale=1.0):
             scale=scale, size=num_components).astype(np.float32)
 
 
+def add_zero_features(graph, num_components=5):
+    for node in graph.nodes(data=True):
+        node[DICT_IND][FEATURES] = np.zeros(num_components, dtype=np.float32)
+
+
+def add_laplacian_features(graph, num_components=5, random_seed=1234):
+    adj = nx.to_numpy_array(graph)
+    try:
+        embeddings = spectral_embedding(
+            adj, n_components=num_components, random_state=random_seed)
+    except Exception:
+        embeddings = np.zeros((adj.shape[0], num_components), dtype=np.float32)
+    for i, node in enumerate(graph.nodes(data=True)):
+        node[DICT_IND][FEATURES] = embeddings[i].astype(np.float32)
+
+
+def add_positional_encoding_features(graph, num_components=5):
+    for i, node in enumerate(graph.nodes(data=True)):
+        features = np.zeros(num_components, dtype=np.float32)
+        for j in range(num_components):
+            if j % 2 == 0:
+                features[j] = np.sin(i / (10000 ** (j / max(num_components, 1))))
+            else:
+                features[j] = np.cos(i / (10000 ** ((j - 1) / max(num_components, 1))))
+        node[DICT_IND][FEATURES] = features
+
+
 # Convert nx grid representation to use a single number instead of a positional
 # tuple to index nodes. Set edge and global features to be 0. For every node,
 # add an edge to itself.
@@ -99,9 +126,9 @@ class GraphDataset():
         batch = []
         for i in range(batch_size):
             if self.test_index == 0:
-                random.shuffle(self.test_set)
+                random.shuffle(self.test_graphs)
             batch.append(self.test_graphs[self.test_index])
-            self.index = (self.test_index + 1) % len(self.test_graphs)
+            self.test_index = (self.test_index + 1) % len(self.test_graphs)
         for g in batch:
             self.add_node_features_fn(g)
         return gn.utils_np.networkxs_to_graphs_tuple(batch)
@@ -116,7 +143,7 @@ class GraphDataset():
             if self.train_index == 0:
                 random.shuffle(self.train_graphs)
             batch.append(self.train_graphs[self.train_index])
-            self.index = (self.train_index + 1) % len(self.train_graphs)
+            self.train_index = (self.train_index + 1) % len(self.train_graphs)
         for g in batch:
             self.add_node_features_fn(g)
         return gn.utils_np.networkxs_to_graphs_tuple(batch)
@@ -253,9 +280,9 @@ class NoisyGraphDataset():
         batch = []
         for i in range(batch_size):
             if self.test_index == 0:
-                random.shuffle(self.test_set)
+                random.shuffle(self.test_graphs)
             batch.append(self.test_graphs[self.test_index])
-            self.index = (self.test_index + 1) % len(self.test_graphs)
+            self.test_index = (self.test_index + 1) % len(self.test_graphs)
         for g in batch:
             self.add_node_features_fn(g)
         return gn.utils_np.networkxs_to_graphs_tuple(batch)
@@ -270,14 +297,52 @@ class NoisyGraphDataset():
             if self.train_index == 0:
                 random.shuffle(self.train_graphs)
             batch.append(self.train_graphs[self.train_index])
-            self.index = (self.train_index + 1) % len(self.train_graphs)
+            self.train_index = (self.train_index + 1) % len(self.train_graphs)
         for g in batch:
             self.add_node_features_fn(g)
         noisy_batch, num_removed = self.perturb_batch(batch)
         noisy_batch = [g.to_directed() for g in noisy_batch]
         batch = [g.to_directed() for g in batch]
         return gn.utils_np.networkxs_to_graphs_tuple(
-            batch), gn.utils_np.networkxs_to_graphs_tuple(batch), num_removed
+            batch), gn.utils_np.networkxs_to_graphs_tuple(noisy_batch), num_removed
+
+
+class InferenceGraphDataset():
+    def __init__(self, train_graphs, test_graphs, add_node_features_fn):
+        self.train_graphs = train_graphs
+        self.test_graphs = test_graphs
+        self.add_node_features_fn = add_node_features_fn
+        self.test_index = 0
+
+    def get_next_test_batch(self, batch_size):
+        batch = []
+        for _ in range(batch_size):
+            batch.append(self.test_graphs[self.test_index % len(self.test_graphs)])
+            self.test_index += 1
+        for g in batch:
+            self.add_node_features_fn(g)
+        return gn.utils_np.networkxs_to_graphs_tuple(batch)
+
+
+def load_grevnet_graph_rnn_dataset(filename, add_node_features_fn):
+    with open(filename, 'rb') as f:
+        graphs = pickle.load(f)
+    graphs_len = len(graphs)
+    test_graphs = graphs[int(0.8 * graphs_len):]
+    train_graphs = graphs[0:int(0.8 * graphs_len)]
+    test_graphs = [g.to_directed() for g in test_graphs]
+    test_graphs = preprocess_networkx_graphs(test_graphs, add_node_features_fn)
+    train_graphs = [g.to_directed() for g in train_graphs]
+    train_graphs = preprocess_networkx_graphs(train_graphs, add_node_features_fn)
+    return InferenceGraphDataset(train_graphs, test_graphs, add_node_features_fn)
+
+
+def load_graph_rnn_dataset_test(filename, add_node_features_fn):
+    with open(filename, 'rb') as f:
+        graphs = pickle.load(f)
+    graphs = [g.to_directed() for g in graphs]
+    graphs = preprocess_networkx_graphs(graphs, add_node_features_fn)
+    return InferenceGraphDataset(graphs, graphs, add_node_features_fn)
 
 
 FILENAME_MAP = {

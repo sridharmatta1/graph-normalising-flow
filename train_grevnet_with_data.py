@@ -18,7 +18,6 @@ from absl import flags
 import graph_nets as gn
 import tensorflow as tf
 import tensorflow_probability as tfp
-import tensorflow.python.debug as tf_debug
 tfd = tfp.distributions
 import absl.logging
 logging.root.removeHandler(absl.logging._absl_handler)
@@ -537,7 +536,7 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
             end_ind = n_node_cum[i]
             num_nodes = end_ind - start_ind
             graph = adjacency[start_ind:end_ind, start_ind:end_ind]
-            graph = nx.convert_matrix.from_numpy_matrix(graph)
+            graph = nx.from_numpy_array(graph)
             single_sample_log_prob = np.mean(
                 sample_log_prob[start_ind:end_ind])
             visualize_graph(graph,

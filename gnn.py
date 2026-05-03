@@ -898,7 +898,7 @@ def pairwise_concat(nodes):
     n_nodes = tf.shape(nodes)[0]
     node_embedding_dim = tf.shape(nodes)[1]
     tile_as = tf.reshape(tf.tile(nodes, [1, n_nodes]), [n_nodes * n_nodes, node_embedding_dim])
-    tile_as.set_shape([None, 40])
+    tile_as.set_shape([None, None])
     tile_bs = tf.tile(nodes, [n_nodes, 1])
     toret = tf.concat([tile_as, tile_bs], axis=-1)
     return toret
