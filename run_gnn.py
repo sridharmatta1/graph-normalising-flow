@@ -262,7 +262,7 @@ incorrect_edges_per_graph_tensor = incorrect_edges_per_graph(true_adj, pred_adj,
                                                              true_graph_phs.n_node)
 false_positive_edges_tensor = false_positive_edges(true_adj, pred_adj)
 false_negative_edges_tensor = false_negative_edges(true_adj, pred_adj)
-regularizer_loss = 0
+regularizer_loss = tf.constant(0.0)
 regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
 if len(regularization_losses) > 0:
     regularizer_loss = tf.dtypes.cast(tf.add_n(regularization_losses),

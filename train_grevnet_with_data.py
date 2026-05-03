@@ -18,7 +18,6 @@ from absl import flags
 import graph_nets as gn
 import tensorflow as tf
 import tensorflow_probability as tfp
-import tensorflow.python.debug as tf_debug
 tfd = tfp.distributions
 import absl.logging
 logging.root.removeHandler(absl.logging._absl_handler)
