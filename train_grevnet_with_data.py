@@ -414,6 +414,10 @@ sample_grevnet_top = grevnet(sample_graphs_tuple, inverse=False)
 sample_pred_adj = pred_adj(sample_grevnet_top,
                            distance_fn=scaled_hacky_sigmoid_l2)
 
+tf.add_to_collection('sample_pred_adj', sample_pred_adj)
+tf.add_to_collection('sample_log_prob', sample_log_prob)
+tf.add_to_collection('sample_n_node', sample_n_node_placeholder)
+
 tf.summary.scalar('total_loss', total_loss)
 tf.summary.scalar('per_node_loss', per_node_loss)
 tf.summary.scalar('log_prob_xs', log_prob_xs)
