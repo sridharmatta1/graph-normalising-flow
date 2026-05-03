@@ -131,7 +131,7 @@ logdir_prefix = os.environ.get('MLPATH')
 if not logdir_prefix:
     logdir_prefix = '.'
 LOGDIR = os.path.join(logdir_prefix, FLAGS.logdir)
-os.makedirs(os.path.join(LOGDIR, 'incorrect_edges_figs'))
+os.makedirs(os.path.join(LOGDIR, 'incorrect_edges_figs'), exist_ok=True)
 
 # Logging and print options.
 np.set_printoptions(suppress=True, formatter={'float': '{: 0.3f}'.format})
