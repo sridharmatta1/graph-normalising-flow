@@ -58,7 +58,7 @@ values_map = {
 batch_num = 0
 num_examples = 0
 file_number = 0
-filename_prefix = os.environ.get('MLPATH')
+filename_prefix = os.environ.get('MLPATH', '.')
 filename_template_str = "{}_{}_{{}}.{}"
 filename_template = filename_template_str.format(
     FLAGS.output_file, FLAGS.run_number,
