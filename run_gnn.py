@@ -16,7 +16,11 @@ import matplotlib
 matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import tensorflow as tf
-#import tfplot
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 from gnn import *
 from graph_data import *
@@ -80,6 +84,8 @@ flags.DEFINE_float('adam_epsilon', 1e-08, '')
 
 # Loss + distance function.
 flags.DEFINE_string('loss_type', 'binary', 'Can be binary or triplet.')
+flags.DEFINE_string('wandb_project', 'graph-normalising-flow', 'W&B project name.')
+flags.DEFINE_string('wandb_run_name', '', 'W&B run name (optional).')
 flags.DEFINE_string('binary_dist_fn', 'scaled_hacky_sigmoid_l2', '')
 flags.DEFINE_bool('tune_sigmoid', False, '')
 flags.DEFINE_bool('use_soft_labels', False, '')
@@ -314,6 +320,14 @@ eval_summaries = tf.summary.merge(
 config = tf.ConfigProto()
 config.gpu_options.allow_growth=True
 sess = reset_sess(config)
+
+if WANDB_AVAILABLE:
+    wandb.init(
+        project=FLAGS.wandb_project,
+        name=FLAGS.wandb_run_name if FLAGS.wandb_run_name else "gnn_{}".format(FLAGS.dataset),
+        config=tf.app.flags.FLAGS.flag_values_dict()
+    )
+
 train_writer = tf.summary.FileWriter(os.path.join(LOGDIR, 'train'), sess.graph)
 eval_writer = tf.summary.FileWriter(os.path.join(LOGDIR, 'test'), sess.graph)
 
@@ -429,6 +443,16 @@ for iteration in range(FLAGS.num_train_iters + 1):
             np.mean(train_values["norm_gnn_output"])))
         logger.info("temp: {}".format(train_values["temp"]))
         logger.info("shift: {}".format(train_values["shift"]))
+        if WANDB_AVAILABLE:
+            wandb.log({
+                "train/sum_loss": train_values["sum_loss"],
+                "train/mean_loss": train_values["mean_loss"],
+                "train/total_incorrect_edges": train_values["total_incorrect_edges"],
+                "train/incorrect_edges_per_node": train_values["incorrect_edges_per_node"],
+                "train/false_positive_edges": train_values["false_positive_edges"],
+                "train/false_negative_edges": train_values["false_negative_edges"],
+                "train/gnn_output_norm": float(np.mean(train_values["norm_gnn_output"])),
+            }, step=iteration)
         if FLAGS.print_adj:
             logger.info("gnn output:\n{}".format(train_values["gnn_output"]))
             logger.info("true_adj:\n{}".format(train_values["true_adj"]))
@@ -463,6 +487,15 @@ for iteration in range(FLAGS.num_train_iters + 1):
             values["eval_false_positive_edges"]))
         logger.info("eval false negative edges: {}".format(
             values["eval_false_negative_edges"]))
+        if WANDB_AVAILABLE:
+            wandb.log({
+                "eval/sum_loss": values["eval_sum_loss"],
+                "eval/mean_loss": values["eval_mean_loss"],
+                "eval/total_incorrect_edges": values["eval_total_incorrect_edges"],
+                "eval/incorrect_edges_per_node": values["eval_incorrect_edges_per_node"],
+                "eval/false_positive_edges": values["eval_false_positive_edges"],
+                "eval/false_negative_edges": values["eval_false_negative_edges"],
+            }, step=iteration)
 
     remainder = iteration % FLAGS.incorrect_every_n_iter
     if remainder < FLAGS.incorrect_history:

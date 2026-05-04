@@ -18,6 +18,11 @@ from absl import flags
 import graph_nets as gn
 import tensorflow as tf
 import tensorflow_probability as tfp
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 tfd = tfp.distributions
 import absl.logging
 logging.root.removeHandler(absl.logging._absl_handler)
@@ -70,6 +75,8 @@ flags.DEFINE_integer('log_every_n_steps', 1, '')
 flags.DEFINE_integer('summary_every_n_steps', 25, '')
 flags.DEFINE_integer('max_checkpoints_to_keep', 5, '')
 flags.DEFINE_integer('save_every_n_steps', 500, '')
+flags.DEFINE_string('wandb_project', 'graph-normalising-flow', 'W&B project name.')
+flags.DEFINE_string('wandb_run_name', '', 'W&B run name (optional).')
 
 # Optimizer params.
 flags.DEFINE_string(
@@ -444,6 +451,14 @@ with open(os.path.join(LOGDIR, 'desc.txt'), 'w') as f:
         f.write("{}: {}\n".format(k, str(v)))
 
 saver = tf.train.Saver(max_to_keep=FLAGS.max_checkpoints_to_keep)
+
+if WANDB_AVAILABLE:
+    wandb.init(
+        project=FLAGS.wandb_project,
+        name=FLAGS.wandb_run_name if FLAGS.wandb_run_name else "grevnet_{}".format(FLAGS.dataset),
+        config=tf.app.flags.FLAGS.flag_values_dict()
+    )
+
 train_values = {}
 values_map = {
     "merge": merged,
@@ -499,6 +514,14 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
             train_values["graphs_tuple"].n_node, train_values["batch_n_node"],
             len(train_values["graphs_tuple"].n_node),
             len(train_values["graphs_tuple"].n_node)))
+        if WANDB_AVAILABLE:
+            wandb.log({
+                "train/total_loss": float(train_values["total_loss"]),
+                "train/per_node_loss": float(train_values["per_node_loss"]),
+                "train/log_prob_zs": float(train_values["log_prob_zs"]),
+                "train/log_prob_xs": float(train_values["log_prob_xs"]),
+                "train/log_det_jacobian": float(train_values["log_det_jacobian"]),
+            }, step=iteration)
 
     #for g, v in grads_and_vars:
         #logger.info("grad of {}: {}".format(v.name, train_values[v.name]))
