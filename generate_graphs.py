@@ -37,7 +37,7 @@ warnings.filterwarnings("ignore")
 # Dataset params.
 flags.DEFINE_string('dataset', '', '')
 flags.DEFINE_string('ckpt_dir', '', '')
-flags.DEFINE_integer('number_to_generate', 50, '')
+flags.DEFINE_integer('number_to_generate', 1024, '')
 flags.DEFINE_string('output_dir', '', '')
 flags.DEFINE_integer('node_embedding_dim', 100, '')
 flags.DEFINE_string('wandb_project', 'graph-normalising-flow', 'W&B project name.')
@@ -58,15 +58,19 @@ values_map = {
     'sample_log_prob': tf.get_collection('sample_log_prob')[0],
     'sample_n_node': tf.get_collection('sample_n_node')[0],
 }
+
 graphs = []
 iteration = 0
 graph_ind = 0
 n_nodes_ind = 0
-while iteration < FLAGS.number_to_generate:
+
+os.makedirs(FLAGS.output_dir, exist_ok=True)
+
+while len(graphs) < FLAGS.number_to_generate:
     print("iteration {}".format(iteration))
     n_node = []
     for _ in range(BATCH_SIZE):
-        n_node.append(n_nodes_distro[n_nodes_ind])
+        n_node.append(n_nodes_distro[n_nodes_ind % len(n_nodes_distro)])
     print("n node is {}".format(n_node))
     feed_dict = {'sample_n_node_placeholder:0': n_node}
     values = sess.run(values_map, feed_dict=feed_dict)
@@ -78,6 +82,8 @@ while iteration < FLAGS.number_to_generate:
     n_node_cum = np.cumsum(n_node)
     start_ind = 0
     for i in range(BATCH_SIZE):
+        if len(graphs) >= FLAGS.number_to_generate:
+            break
         end_ind = n_node_cum[i]
         graph = adjacency[start_ind:end_ind, start_ind:end_ind]
         graph = nx.from_numpy_array(graph)
@@ -89,33 +95,7 @@ while iteration < FLAGS.number_to_generate:
         graph_ind += 1
     iteration += 1
     n_nodes_ind += 1
+
+print("\nGenerated {} graphs total".format(len(graphs)))
 pickle.dump(graphs, open(os.path.join(FLAGS.output_dir, 'graphs.p'), 'wb'))
-
-# Compute MMD metrics and log to wandb
-print("\nComputing MMD metrics...")
-try:
-    from compute_mmd import mmd_degree, mmd_clustering, mmd_orbit, load_test_graphs
-    test_graphs = load_test_graphs(FLAGS.dataset)
-    mmd_deg = mmd_degree(graphs, test_graphs)
-    mmd_clust = mmd_clustering(graphs, test_graphs)
-    mmd_orb = mmd_orbit(graphs, test_graphs)
-    print("MMD Degree:     {:.6f}".format(mmd_deg))
-    print("MMD Clustering: {:.6f}".format(mmd_clust))
-    print("MMD Orbit:      {:.6f}".format(mmd_orb))
-
-    if WANDB_AVAILABLE:
-        wandb.init(
-            project=FLAGS.wandb_project,
-            name=FLAGS.wandb_run_name if FLAGS.wandb_run_name else "eval_{}".format(FLAGS.dataset),
-            config=tf.app.flags.FLAGS.flag_values_dict()
-        )
-        wandb.log({
-            "mmd/degree": mmd_deg,
-            "mmd/clustering": mmd_clust,
-            "mmd/orbit": mmd_orb,
-            "eval/num_generated_graphs": len(graphs),
-        })
-        wandb.finish()
-        print("MMD metrics logged to wandb.")
-except Exception as e:
-    print("MMD computation skipped: {}".format(e))
+print("Saved graphs to {}/graphs.p".format(FLAGS.output_dir))

@@ -1,7 +1,12 @@
-graph_nets
+tensorflow==1.14.0
 tensorflow-probability==0.7.0
-python-louvain
-tensorflow-plot
-dm-sonnet==1.34
-sklearn
+dm-sonnet
+graph-nets
 networkx
+python-louvain
+scikit-learn
+matplotlib==3.3.4
+numpy
+absl-py
+scipy
+pickle5
