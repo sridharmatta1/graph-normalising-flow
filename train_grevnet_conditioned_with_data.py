@@ -93,6 +93,11 @@ flags.DEFINE_float('clip_gradient_norm', 10.0,
 # NConditionedGNFBlock params.
 flags.DEFINE_integer('num_coupling_layers', 10, '')
 flags.DEFINE_bool('weight_sharing', False, '')
+flags.DEFINE_bool(
+    'use_batch_norm', True,
+    'Renormalize x0/x1 before each coupling sub-step (see GNFBlock). '
+    'Without this, exp(s) compounds across stacked layers and reliably '
+    'overflows to inf/nan.')
 flags.DEFINE_integer(
     'latent_dim', 2048,
     'Hidden dim used inside each FiLM-conditioned s/t network.')
@@ -258,7 +263,8 @@ grevnet = NConditionedGNFBlock(
     node_embedding_dim=HALF_DIM,
     hidden_dim=FLAGS.latent_dim,
     n_embed_dim=FLAGS.n_embed_dim,
-    weight_sharing=FLAGS.weight_sharing)
+    weight_sharing=FLAGS.weight_sharing,
+    use_batch_norm=FLAGS.use_batch_norm)
 
 prior_n_embedding_mod = NEmbedding(FLAGS.n_embed_dim)
 prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
