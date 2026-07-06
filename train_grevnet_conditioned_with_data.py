@@ -333,7 +333,8 @@ sample_nodes = sample_conditional_prior(sample_n_node_placeholder, sample_mu,
                                         sample_sigma)
 sample_log_prob = conditional_prior_log_prob(sample_nodes,
                                              sample_n_node_placeholder,
-                                             sample_mu, sample_sigma)
+                                             sample_mu, sample_sigma,
+                                             per_node=True)
 sample_graphs_tuple = sample_graphs_tuple_structure.replace(
     nodes=sample_nodes)
 
@@ -463,7 +464,8 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
             num_nodes = end_ind - start_ind
             graph = adjacency[start_ind:end_ind, start_ind:end_ind]
             graph = nx.from_numpy_array(graph)
-            single_sample_log_prob = sample_log_prob_vals[i]
+            single_sample_log_prob = np.mean(
+                sample_log_prob_vals[start_ind:end_ind])
             visualize_graph(graph,
                             filename=os.path.join(
                                 graphs_dir,

@@ -92,17 +92,24 @@ def _node_to_graph_ids(n_node):
     return repeat_rows(tf.expand_dims(graph_ids, axis=1), n_node)[:, 0]
 
 
-def conditional_prior_log_prob(h_t, n_node, mu, sigma):
-    """log p_prior(H_T | N), summed over nodes and features, per graph.
+def conditional_prior_log_prob(h_t, n_node, mu, sigma, per_node=False):
+    """log p_prior(H_T | N), summed over features, per graph or per node.
 
     Args:
       h_t: [total_num_nodes, d] flow output node features.
       n_node: [num_graphs] int node counts (graph.n_node).
       mu, sigma: [num_graphs, d] from ConditionalPriorNetwork.
+      per_node: if True, skip the final per-graph aggregation and return the
+        [total_num_nodes] per-node log-density instead -- needed anywhere
+        that slices log-probs by node-index range (e.g. generate_graphs.py,
+        which was written against the original per-node mvn.log_prob(nodes)
+        convention and would otherwise silently index past the end of a
+        [num_graphs]-shaped array).
 
     Returns:
-      [num_graphs] log-density of each graph's nodes under its own
-      N-conditioned Gaussian.
+      [num_graphs] (or [total_num_nodes] if per_node) log-density of each
+      graph's nodes (or each individual node) under its own N-conditioned
+      Gaussian.
     """
     node_mu = repeat_rows(mu, n_node)
     node_sigma = repeat_rows(sigma, n_node)
@@ -110,6 +117,9 @@ def conditional_prior_log_prob(h_t, n_node, mu, sigma):
     z = (h_t - node_mu) / node_sigma
     per_node_per_feat_log_prob = -0.5 * (z * z) - tf.log(node_sigma) - 0.5 * LOG_TWO_PI
     per_node_log_prob = tf.reduce_sum(per_node_per_feat_log_prob, axis=1)
+
+    if per_node:
+        return per_node_log_prob
 
     graph_ids = _node_to_graph_ids(n_node)
     num_graphs = tf.shape(n_node)[0]
