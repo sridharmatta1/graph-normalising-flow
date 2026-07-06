@@ -92,6 +92,14 @@ echo "STAGE 2 COMPLETED -- $(date) -- $((STAGE_END - STAGE_START))s"
 # batch size of 32 when restoring 'sample_n_node_placeholder'
 # from the checkpoint, so this must match or stage 4 will fail
 # with a shape mismatch.
+#
+# latent_dim/num_coupling_layers deliberately small here:
+# NConditionedGNFBlock has no batch-norm/renormalization step
+# between coupling layers (unlike GNFBlock), so at large hidden
+# dims + many stacked layers the unclamped affine scale exp(s)
+# can overflow across layers and produce NaN losses even at
+# iteration 0. Keeping these small avoids that for this smoke
+# test; it does not fix the underlying instability at full scale.
 # ============================================================
 echo "STAGE 3 STARTED: N-conditioned GNF -- $(date)"
 STAGE_START=$(date +%s)
@@ -101,8 +109,8 @@ srun $PYTHON -u $WORKDIR/train_grevnet_conditioned_with_data.py \
     --train_data_dir $RESULTS_DIR/node_embeddings \
     --logdir $RESULTS_DIR/grevnet_conditioned \
     --node_embedding_dim $NODE_EMBEDDING_DIM \
-    --num_coupling_layers 12 \
-    --latent_dim 2048 \
+    --num_coupling_layers 4 \
+    --latent_dim 64 \
     --n_embed_dim 32 \
     --weight_sharing True \
     --train_batch_size $TRAIN_BATCH_SIZE \
