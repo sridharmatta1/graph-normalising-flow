@@ -118,9 +118,13 @@ film_generator = (grevnet.s[0]._node_block.film_generator
 gamma, beta = film_generator(flow_n_embedding)
 
 sess = reset_sess()
-saver = tf.train.Saver()
-print("Restoring from {}".format(FLAGS.checkpoint))
-saver.restore(sess, FLAGS.checkpoint)
+if FLAGS.checkpoint:
+    saver = tf.train.Saver()
+    print("Restoring from {}".format(FLAGS.checkpoint))
+    saver.restore(sess, FLAGS.checkpoint)
+else:
+    print("No --checkpoint given -- using random initialization "
+          "(reset_sess() already ran global_variables_initializer()).")
 
 values = sess.run(
     {
@@ -132,9 +136,12 @@ values = sess.run(
 
 
 def report(name, arr):
-    """arr: [num_graphs, dim]. Prints per-N summary stats plus the std
-    *across* N of each dim, averaged over dims -- the direct answer to
-    "does this vary with N".
+    """arr: [num_graphs, dim]. Prints per-N summary stats, the std *across*
+    N of each dim (relative to that quantity's own scale -- misleading to
+    compare directly between quantities with a nonzero identity baseline
+    like sigma/gamma (~1.0) vs. a zero baseline like mu/beta), and the raw
+    (non-relative) absolute std across N, which *is* fair to compare
+    across quantities regardless of baseline.
     """
     print("\n{} (shape {}):".format(name, arr.shape))
     for n, row in zip(probe_n, arr):
@@ -143,9 +150,13 @@ def report(name, arr):
     per_dim_std_across_n = np.std(arr, axis=0)
     per_dim_scale = np.mean(np.abs(arr), axis=0) + 1e-8
     relative_variation = np.mean(per_dim_std_across_n / per_dim_scale)
+    absolute_variation = np.mean(per_dim_std_across_n)
     print("  --> mean relative std across N: {:.4f}  ({})".format(
         relative_variation, "N IS influencing this"
         if relative_variation > 0.05 else "N-conditioning looks collapsed"))
+    print("  --> mean absolute std across N: {:.6f}  (fair to compare "
+         "across quantities, unlike the relative number above)".format(
+             absolute_variation))
 
 
 print("=" * 70)
