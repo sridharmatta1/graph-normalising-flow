@@ -41,7 +41,12 @@ from utils import reset_sess, senders_receivers
 
 warnings.filterwarnings("ignore")
 
-flags.DEFINE_string('ckpt_dir', '', 'Directory with the trained checkpoint.')
+flags.DEFINE_string(
+    'checkpoint', '',
+    'Exact checkpoint path prefix to restore, e.g. '
+    '.../checkpoints-501 (no .index/.data suffix). Lets you target a '
+    'specific checkpoint directly instead of always restoring whichever '
+    'one a directory\'s "checkpoint" metadata file marks as latest.')
 flags.DEFINE_string('probe_n_values', '4,8,12,16,20',
                     'Comma-separated N values to probe, one per graph.')
 flags.DEFINE_integer('node_embedding_dim', 14, 'Must match training.')
@@ -114,9 +119,8 @@ gamma, beta = film_generator(flow_n_embedding)
 
 sess = reset_sess()
 saver = tf.train.Saver()
-latest_checkpoint = tf.train.latest_checkpoint(FLAGS.ckpt_dir)
-print("Restoring from {}".format(latest_checkpoint))
-saver.restore(sess, latest_checkpoint)
+print("Restoring from {}".format(FLAGS.checkpoint))
+saver.restore(sess, FLAGS.checkpoint)
 
 values = sess.run(
     {
