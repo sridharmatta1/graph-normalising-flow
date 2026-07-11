@@ -2,7 +2,7 @@
 #SBATCH --job-name=GNF_comm_conditioned
 #SBATCH --output=logs/community_conditioned_output.log
 #SBATCH --error=logs/community_conditioned_error.log
-#SBATCH --mail-user=matta@uni-hildesheim.de
+#SBATCH --mail-user=bidaralli@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
 #SBATCH --gres=gpu:2
@@ -24,8 +24,8 @@
 #     seed, checkpoint cadence) match the baseline exactly.
 # ============================================================
 SEED=1
-PYTHON=/home/matta/miniconda3/envs/gnf_2026/bin/python
-WORKDIR=/home/matta/graph-normalising-flow
+PYTHON=/home/bidaralli/miniconda3/envs/SRP_Graphs/bin/python
+WORKDIR=/home/bidaralli/Graph-Normalising-flow
 RESULTS_DIR=$WORKDIR/results/community_conditioned/seed_$SEED
 
 # ============================================================
