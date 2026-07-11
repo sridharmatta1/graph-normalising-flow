@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=GNF_comm_conditioned
-#SBATCH --output=logs/community_conditioned_output_%a.log
-#SBATCH --error=logs/community_conditioned_error_%a.log
+#SBATCH --output=logs/community_conditioned_output.log
+#SBATCH --error=logs/community_conditioned_error.log
 #SBATCH --mail-user=matta@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
 #SBATCH --gres=gpu:1
-#SBATCH --array=1-5
 
 # ============================================================
 # Full-scale N-conditioned GNF on community-small, mirroring
@@ -24,7 +23,7 @@
 #     num_coupling_layers, iters, epochs, batch size, lr schedule,
 #     seed, checkpoint cadence) match the baseline exactly.
 # ============================================================
-SEED=$SLURM_ARRAY_TASK_ID
+SEED=1
 PYTHON=/home/matta/miniconda3/envs/gnf_2026/bin/python
 WORKDIR=/home/matta/graph-normalising-flow
 RESULTS_DIR=$WORKDIR/results/community_conditioned/seed_$SEED
