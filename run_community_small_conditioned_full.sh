@@ -52,7 +52,7 @@ WANDB_PROJECT=graph-normalising-flow
 
 # Conditioning-specific (no baseline equivalent).
 N_EMBED_DIM=32
-WEIGHT_SHARING=True
+WEIGHT_SHARING=False
 USE_BATCH_NORM=True
 
 # ============================================================
