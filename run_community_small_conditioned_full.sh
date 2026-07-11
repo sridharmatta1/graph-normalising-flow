@@ -5,7 +5,7 @@
 #SBATCH --mail-user=matta@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 
 # ============================================================
 # Full-scale N-conditioned GNF on community-small, mirroring
