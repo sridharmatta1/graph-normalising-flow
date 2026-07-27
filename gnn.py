@@ -263,6 +263,33 @@ def make_batch_norm():
     return tfb.BatchNormalization(batchnorm_layer=bn, training=True)
 
 
+def make_batch_norm_pair():
+    """Like make_batch_norm(), but returns (bn_train, bn_generate): two
+    bijector wrappers around the *same* underlying
+    tf.layers.BatchNormalization layer (so gamma/beta/moving_mean/
+    moving_variance are shared/trained together), differing only in
+    whether they use the current batch's statistics (bn_train,
+    training=True -- for the training-direction .inverse() calls) or the
+    layer's accumulated running average (bn_generate, training=False --
+    for the generation-direction .forward() calls).
+
+    make_batch_norm()'s single training=True instance, if also used for
+    .forward() at generation time, normalizes using statistics computed
+    fresh from whatever's fed in -- for generation, that's a freshly
+    sampled batch from the prior, which is not the real-data-derived
+    distribution the layer's gamma/beta were actually calibrated against
+    during training. Splitting into two wrappers around one shared layer
+    fixes that: generation uses the stable, trained running average
+    instead of noisy statistics from an out-of-training-distribution
+    batch.
+    """
+    bn = tf.layers.BatchNormalization(
+        axis=-1, gamma_constraint=lambda x: tf.nn.relu(x) + 1e-6)
+    bn_train = tfb.BatchNormalization(batchnorm_layer=bn, training=True)
+    bn_generate = tfb.BatchNormalization(batchnorm_layer=bn, training=False)
+    return bn_train, bn_generate
+
+
 def get_gnns(num_timesteps, make_gnn_fn):
     return [make_gnn_fn() for _ in range(num_timesteps)]
 

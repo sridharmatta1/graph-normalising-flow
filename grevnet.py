@@ -15,6 +15,19 @@ class NConditionedGNFBlock(snt.AbstractModule):
     within a handful of layers. The batch-norm term contributes its own
     additional piece to log_det_jacobian, exactly as in GNFBlock.
 
+    Unlike GNFBlock, each batch-norm step uses a *pair* of bijectors
+    (make_batch_norm_pair(), not make_batch_norm()) sharing one underlying
+    layer: bn_train (training=True, current-batch statistics) for f()'s
+    .inverse() calls, and bn_generate (training=False, the layer's
+    accumulated running average) for g()'s .forward() calls. A single
+    training=True instance used for both, as GNFBlock does, normalizes
+    generation-time samples using statistics computed fresh from that
+    generated batch -- not the real-data-derived distribution the layer's
+    gamma/beta were actually calibrated against during training. That
+    mismatch was confirmed empirically: a trained checkpoint's generated
+    embeddings had ~5-11x the L2 norm of real encoder embeddings, enough
+    to make the (unchanged) decoder predict "no edge" almost everywhere.
+
     N never touches the half of the nodes that passes through unchanged
     (x0 in the first sub-step, x1 in the second) and never appears in the
     log-det term directly — it can only ever influence log_det_jacobian
@@ -51,8 +64,8 @@ class NConditionedGNFBlock(snt.AbstractModule):
                     get_gnns(num_timesteps, make_t_fn),
                     get_gnns(num_timesteps, make_t_fn)
                 ]
-            self.bns = [[make_batch_norm() for _ in range(num_timesteps)],
-                        [make_batch_norm() for _ in range(num_timesteps)]]
+            self.bns = [[make_batch_norm_pair() for _ in range(num_timesteps)],
+                        [make_batch_norm_pair() for _ in range(num_timesteps)]]
 
     def f(self, x):
         log_det_jacobian = 0
@@ -62,9 +75,10 @@ class NConditionedGNFBlock(snt.AbstractModule):
         x1 = x.replace(nodes=x1)
         for i in range(self.num_timesteps):
             if self.use_batch_norm:
-                bn = self.bns[0][i]
-                log_det_jacobian += bn.inverse_log_det_jacobian(x0.nodes, 2)
-                x0 = x0.replace(nodes=bn.inverse(x0.nodes))
+                bn_train, _ = self.bns[0][i]
+                log_det_jacobian += bn_train.inverse_log_det_jacobian(
+                    x0.nodes, 2)
+                x0 = x0.replace(nodes=bn_train.inverse(x0.nodes))
             if self.weight_sharing:
                 s = self.s[0](x0, n_embedding).nodes
                 t = self.t[0](x0, n_embedding).nodes
@@ -75,9 +89,10 @@ class NConditionedGNFBlock(snt.AbstractModule):
             x1 = x1.replace(nodes=x1.nodes * tf.exp(s) + t)
 
             if self.use_batch_norm:
-                bn = self.bns[1][i]
-                log_det_jacobian += bn.inverse_log_det_jacobian(x1.nodes, 2)
-                x1 = x1.replace(nodes=bn.inverse(x1.nodes))
+                bn_train, _ = self.bns[1][i]
+                log_det_jacobian += bn_train.inverse_log_det_jacobian(
+                    x1.nodes, 2)
+                x1 = x1.replace(nodes=bn_train.inverse(x1.nodes))
             if self.weight_sharing:
                 s = self.s[1](x1, n_embedding).nodes
                 t = self.t[1](x1, n_embedding).nodes
@@ -103,7 +118,8 @@ class NConditionedGNFBlock(snt.AbstractModule):
                 s = self.s[1][i](z1, n_embedding).nodes
                 t = self.t[1][i](z1, n_embedding).nodes
             if self.use_batch_norm:
-                z1 = z1.replace(nodes=self.bns[1][i].forward(z1.nodes))
+                _, bn_generate = self.bns[1][i]
+                z1 = z1.replace(nodes=bn_generate.forward(z1.nodes))
             z0 = z0.replace(nodes=(z0.nodes - t) * tf.exp(-s))
 
             if self.weight_sharing:
@@ -113,7 +129,8 @@ class NConditionedGNFBlock(snt.AbstractModule):
                 s = self.s[0][i](z0, n_embedding).nodes
                 t = self.t[0][i](z0, n_embedding).nodes
             if self.use_batch_norm:
-                z0 = z0.replace(nodes=self.bns[0][i].forward(z0.nodes))
+                _, bn_generate = self.bns[0][i]
+                z0 = z0.replace(nodes=bn_generate.forward(z0.nodes))
             z1 = z1.replace(nodes=(z1.nodes - t) * tf.exp(-s))
         return z.replace(nodes=tf.concat([z0.nodes, z1.nodes], axis=1))
 
