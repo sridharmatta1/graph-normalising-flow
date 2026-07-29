@@ -54,6 +54,7 @@ WANDB_PROJECT=graph-normalising-flow
 N_EMBED_DIM=32
 WEIGHT_SHARING=False
 USE_BATCH_NORM=True
+PRIOR_KL_WEIGHT=0.1
 
 # ============================================================
 # CREATE DIRECTORIES
@@ -143,6 +144,7 @@ srun $PYTHON -u $WORKDIR/train_grevnet_conditioned_with_data.py \
     --n_embed_dim $N_EMBED_DIM \
     --weight_sharing $WEIGHT_SHARING \
     --use_batch_norm $USE_BATCH_NORM \
+    --prior_kl_weight $PRIOR_KL_WEIGHT \
     --num_train_iters $NUM_TRAIN_ITERS \
     --train_epochs $TRAIN_EPOCHS \
     --train_batch_size $TRAIN_BATCH_SIZE \

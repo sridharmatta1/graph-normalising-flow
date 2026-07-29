@@ -5,7 +5,7 @@
 #SBATCH --mail-user=matta@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:3
 
 # ============================================================
 # Confirmation run: enough iterations per stage to see a real,
@@ -114,6 +114,7 @@ srun $PYTHON -u $WORKDIR/train_grevnet_conditioned_with_data.py \
     --latent_dim 2048 \
     --use_batch_norm True \
     --n_embed_dim 32 \
+    --prior_kl_weight 0.1 \
     --weight_sharing True \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --train_epochs 5 \

@@ -102,6 +102,18 @@ flags.DEFINE_integer(
     'latent_dim', 2048,
     'Hidden dim used inside each FiLM-conditioned s/t network.')
 flags.DEFINE_integer('n_embed_dim', 32, 'Dimension of the N embedding.')
+flags.DEFINE_float(
+    'prior_kl_weight', 0.1,
+    'Weight on KL(N(mu(N),sigma(N)^2) || N(0,1)), added to the loss to '
+    'discourage the conditional prior from drifting arbitrarily far from '
+    'a standard normal. Does not disable N-conditioning -- mu/sigma can '
+    'still differ meaningfully across N, this just penalizes the *size* '
+    'of that deviation unless it earns its keep in log-likelihood. '
+    'Confirmed empirically: mu/gamma drifting far from their identity '
+    'init (mu~0.45, gamma~0.6 by the end of a 100k-iteration run, vs '
+    '~0 and ~1 early on) correlated with generated embeddings landing '
+    '5-11x farther from real ones in L2 norm than they should. Set to 0 '
+    'to disable.')
 
 # Node feature params.
 flags.DEFINE_integer('node_embedding_dim', 200,
@@ -278,7 +290,16 @@ log_prob_zs = tf.reduce_sum(
     conditional_prior_log_prob(grevnet_reverse_output.nodes,
                                graphs_tuple.n_node, train_mu, train_sigma))
 log_prob_xs = log_prob_zs + log_det_jacobian
-total_loss = -1 * log_prob_xs
+
+# KL(N(mu,sigma^2) || N(0,1)), summed over dims and graphs. Standard
+# closed form; see the prior_kl_weight flag docstring for why this is
+# here -- keeps the prior from drifting arbitrarily far from a
+# well-behaved reference point without disabling N-conditioning itself.
+prior_kl = tf.reduce_sum(0.5 * (tf.square(train_sigma) +
+                                tf.square(train_mu) - 1.0 -
+                                2.0 * tf.log(train_sigma)))
+
+total_loss = -1 * log_prob_xs + FLAGS.prior_kl_weight * prior_kl
 per_node_loss = total_loss / tf.cast(tf.reduce_sum(graphs_tuple.n_node),
                                      tf.float32)
 # Optimizer.
@@ -351,6 +372,9 @@ tf.summary.scalar('per_node_loss', per_node_loss)
 tf.summary.scalar('log_prob_xs', log_prob_xs)
 tf.summary.scalar('log_prob_zs', log_prob_zs)
 tf.summary.scalar('log_det_jacobian', log_det_jacobian)
+tf.summary.scalar('prior_kl', prior_kl)
+tf.summary.scalar('prior_mu_norm', tf.norm(train_mu))
+tf.summary.scalar('prior_sigma_mean', tf.reduce_mean(train_sigma))
 
 merged = tf.summary.merge_all()
 config = tf.ConfigProto()
@@ -381,6 +405,9 @@ values_map = {
     "log_prob_zs": log_prob_zs,
     "log_prob_xs": log_prob_xs,
     "log_det_jacobian": log_det_jacobian,
+    "prior_kl": prior_kl,
+    "prior_mu_norm": tf.norm(train_mu),
+    "prior_sigma_mean": tf.reduce_mean(train_sigma),
     "graphs_tuple": graphs_tuple,
     "batch_n_node": batch_n_node,
 }
@@ -420,6 +447,9 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
         logger.info("log prob zs: {}".format(train_values["log_prob_zs"]))
         logger.info("log det jacobian: {}".format(
             train_values["log_det_jacobian"]))
+        logger.info("prior kl: {}  prior mu norm: {}  prior sigma mean: {}".format(
+            train_values["prior_kl"], train_values["prior_mu_norm"],
+            train_values["prior_sigma_mean"]))
         logger.info("batch n_node {}, tot node {}, batch size {}".format(
             train_values["graphs_tuple"].n_node, train_values["batch_n_node"],
             len(train_values["graphs_tuple"].n_node)))
