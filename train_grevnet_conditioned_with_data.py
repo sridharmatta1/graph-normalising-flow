@@ -95,9 +95,14 @@ flags.DEFINE_integer('num_coupling_layers', 10, '')
 flags.DEFINE_bool('weight_sharing', False, '')
 flags.DEFINE_bool(
     'use_batch_norm', True,
-    'Renormalize x0/x1 before each coupling sub-step (see GNFBlock). '
-    'Without this, exp(s) compounds across stacked layers and reliably '
-    'overflows to inf/nan.')
+    'Renormalize x0/x1 before each coupling sub-step. Despite the flag '
+    'name (kept for run.sh compatibility), this now controls ActNorm '
+    '(gnn.py), not BatchNorm -- fixed, learned per-dimension scale/shift '
+    'that is exactly invertible, unlike BatchNorm, whose training-time '
+    'and generation-time statistics sources diverge (confirmed via '
+    'check_roundtrip.py to make g(f(x)) differ from x by ~4x for real '
+    'x). Without renormalization entirely, exp(s) compounds across '
+    'stacked layers and reliably overflows to inf/nan.')
 flags.DEFINE_integer(
     'latent_dim', 2048,
     'Hidden dim used inside each FiLM-conditioned s/t network.')

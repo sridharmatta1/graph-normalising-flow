@@ -7,26 +7,25 @@ class NConditionedGNFBlock(snt.AbstractModule):
     by N-conditioned networks (see n_conditioning.py): N is embedded once
     per forward pass and fed into every s/t network's own FiLM generator.
 
-    Also mirrors GNFBlock's per-step batch-norm renormalization, applied to
-    x0/x1 immediately before they're fed into that step's s/t network.
-    Without it, the unclamped affine scale exp(s) compounds across stacked
+    Also mirrors GNFBlock's per-step renormalization, applied to x0/x1
+    immediately before they're fed into that step's s/t network. Without
+    it, the unclamped affine scale exp(s) compounds across stacked
     coupling layers -- each layer's output is the next layer's s/t input
     with no renormalization in between -- and reliably overflows to inf/nan
-    within a handful of layers. The batch-norm term contributes its own
-    additional piece to log_det_jacobian, exactly as in GNFBlock.
+    within a handful of layers.
 
-    Unlike GNFBlock, each batch-norm step uses a *pair* of bijectors
-    (make_batch_norm_pair(), not make_batch_norm()) sharing one underlying
-    layer: bn_train (training=True, current-batch statistics) for f()'s
-    .inverse() calls, and bn_generate (training=False, the layer's
-    accumulated running average) for g()'s .forward() calls. A single
-    training=True instance used for both, as GNFBlock does, normalizes
-    generation-time samples using statistics computed fresh from that
-    generated batch -- not the real-data-derived distribution the layer's
-    gamma/beta were actually calibrated against during training. That
-    mismatch was confirmed empirically: a trained checkpoint's generated
-    embeddings had ~5-11x the L2 norm of real encoder embeddings, enough
-    to make the (unchanged) decoder predict "no edge" almost everywhere.
+    Unlike GNFBlock, this uses ActNorm (gnn.py) instead of BatchNorm.
+    BatchNorm's training-direction .inverse() (fresh per-batch statistics)
+    and generation-direction .forward() (the stored running average) use
+    *different* statistics sources, so g(f(x)) is only approximately x,
+    not exactly -- confirmed empirically via check_roundtrip.py: for real
+    x, g(f(x)) differed from x by ~4x in L2 norm, i.e. the flow's own
+    forward/inverse passes were not actually consistent with each other,
+    independent of any prior/sampling behavior. ActNorm uses fixed,
+    learned per-dimension scale/shift (ordinary trainable weights, never
+    recomputed from batch statistics), so .forward()/.inverse() are exact
+    algebraic inverses of each other by construction -- the same fix Glow
+    (Kingma & Dhariwal 2018) uses ActNorm for, for the same reason.
 
     N never touches the half of the nodes that passes through unchanged
     (x0 in the first sub-step, x1 in the second) and never appears in the
@@ -78,8 +77,8 @@ class NConditionedGNFBlock(snt.AbstractModule):
                     get_gnns(num_timesteps, make_t_fn),
                     get_gnns(num_timesteps, make_t_fn)
                 ]
-            self.bns = [[make_batch_norm_pair() for _ in range(num_timesteps)],
-                        [make_batch_norm_pair() for _ in range(num_timesteps)]]
+            self.bns = [[make_act_norm(node_embedding_dim) for _ in range(num_timesteps)],
+                        [make_act_norm(node_embedding_dim) for _ in range(num_timesteps)]]
 
     def f(self, x):
         log_det_jacobian = 0
@@ -89,10 +88,9 @@ class NConditionedGNFBlock(snt.AbstractModule):
         x1 = x.replace(nodes=x1)
         for i in range(self.num_timesteps):
             if self.use_batch_norm:
-                bn_train, _ = self.bns[0][i]
-                log_det_jacobian += bn_train.inverse_log_det_jacobian(
-                    x0.nodes, 2)
-                x0 = x0.replace(nodes=bn_train.inverse(x0.nodes))
+                an = self.bns[0][i]
+                log_det_jacobian += an.inverse_log_det_jacobian(x0.nodes)
+                x0 = x0.replace(nodes=an.inverse(x0.nodes))
             if self.weight_sharing:
                 s = self.s[0](x0, n_embedding).nodes
                 t = self.t[0](x0, n_embedding).nodes
@@ -104,10 +102,9 @@ class NConditionedGNFBlock(snt.AbstractModule):
             x1 = x1.replace(nodes=x1.nodes * tf.exp(s) + t)
 
             if self.use_batch_norm:
-                bn_train, _ = self.bns[1][i]
-                log_det_jacobian += bn_train.inverse_log_det_jacobian(
-                    x1.nodes, 2)
-                x1 = x1.replace(nodes=bn_train.inverse(x1.nodes))
+                an = self.bns[1][i]
+                log_det_jacobian += an.inverse_log_det_jacobian(x1.nodes)
+                x1 = x1.replace(nodes=an.inverse(x1.nodes))
             if self.weight_sharing:
                 s = self.s[1](x1, n_embedding).nodes
                 t = self.t[1](x1, n_embedding).nodes
@@ -135,8 +132,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
                 t = self.t[1][i](z1, n_embedding).nodes
             s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             if self.use_batch_norm:
-                _, bn_generate = self.bns[1][i]
-                z1 = z1.replace(nodes=bn_generate.forward(z1.nodes))
+                z1 = z1.replace(nodes=self.bns[1][i].forward(z1.nodes))
             z0 = z0.replace(nodes=(z0.nodes - t) * tf.exp(-s))
 
             if self.weight_sharing:
@@ -147,8 +143,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
                 t = self.t[0][i](z0, n_embedding).nodes
             s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             if self.use_batch_norm:
-                _, bn_generate = self.bns[0][i]
-                z0 = z0.replace(nodes=bn_generate.forward(z0.nodes))
+                z0 = z0.replace(nodes=self.bns[0][i].forward(z0.nodes))
             z1 = z1.replace(nodes=(z1.nodes - t) * tf.exp(-s))
         return z.replace(nodes=tf.concat([z0.nodes, z1.nodes], axis=1))
 

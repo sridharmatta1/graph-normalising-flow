@@ -290,6 +290,58 @@ def make_batch_norm_pair():
     return bn_train, bn_generate
 
 
+class ActNorm(snt.AbstractModule):
+    """Exactly-invertible replacement for BatchNorm inside a flow.
+
+    Unlike BatchNorm, .forward()/.inverse() use only fixed, learned
+    per-dimension scale/shift parameters -- ordinary trainable weights,
+    never batch statistics -- so inverse(forward(z)) == z and
+    forward(inverse(x)) == x exactly (up to floating point), regardless
+    of batch size or what data is fed in. This is the same fix Glow
+    (Kingma & Dhariwal 2018) uses ActNorm for instead of BatchNorm: with
+    BatchNorm, the training-direction .inverse() (fresh per-batch
+    statistics) and the generation-direction .forward() (the stored
+    running average) use *different* statistics sources, so g(f(x)) is
+    only approximately x, not exactly -- confirmed empirically via
+    check_roundtrip.py to differ by ~4x in L2 norm for real x, i.e. the
+    flow's own forward/inverse passes were not actually consistent with
+    each other, independent of any prior/sampling behavior.
+
+    log_scale/shift start at 0 (scale=1, shift=0, the identity
+    transform), matching this codebase's other zero-init-toward-identity
+    choices (the coupling scale clamp, FiLM's gamma/beta) for a stable
+    starting point that training can move away from as needed.
+    """
+
+    def __init__(self, dim, name="ActNorm"):
+        super(ActNorm, self).__init__(name=name)
+        with self._enter_variable_scope():
+            self.log_scale = tf.get_variable(
+                "log_scale", shape=[dim], initializer=tf.zeros_initializer())
+            self.shift = tf.get_variable(
+                "shift", shape=[dim], initializer=tf.zeros_initializer())
+
+    def inverse(self, x):
+        """Normalize direction, used in f() (matches BatchNorm's role)."""
+        return (x - self.shift) * tf.exp(-self.log_scale)
+
+    def forward(self, z):
+        """De-normalize direction, used in g()."""
+        return z * tf.exp(self.log_scale) + self.shift
+
+    def inverse_log_det_jacobian(self, x, event_ndims=None):
+        del event_ndims  # Unused; kept to match BatchNorm bijectors' call signature.
+        num_rows = tf.cast(tf.shape(x)[0], tf.float32)
+        return -tf.reduce_sum(self.log_scale) * num_rows
+
+    def _build(self):
+        pass
+
+
+def make_act_norm(dim):
+    return ActNorm(dim)
+
+
 def get_gnns(num_timesteps, make_gnn_fn):
     return [make_gnn_fn() for _ in range(num_timesteps)]
 
