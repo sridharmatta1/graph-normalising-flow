@@ -114,6 +114,15 @@ flags.DEFINE_float(
     '~0 and ~1 early on) correlated with generated embeddings landing '
     '5-11x farther from real ones in L2 norm than they should. Set to 0 '
     'to disable.')
+flags.DEFINE_float(
+    'max_log_scale', 2.0,
+    'Bounds the affine coupling scale s via max_log_scale*tanh(s/'
+    'max_log_scale) before exp(s), so exp(s) is capped to roughly '
+    '[exp(-max_log_scale), exp(max_log_scale)] per layer regardless of '
+    'what the s network outputs. Unbounded s compounds multiplicatively '
+    'across num_coupling_layers stacked layers -- confirmed empirically '
+    'to still cause a ~4x real-vs-generated embedding scale mismatch '
+    'even with batch norm and prior_kl_weight already fixed.')
 
 # Node feature params.
 flags.DEFINE_integer('node_embedding_dim', 200,
@@ -276,7 +285,8 @@ grevnet = NConditionedGNFBlock(
     hidden_dim=FLAGS.latent_dim,
     n_embed_dim=FLAGS.n_embed_dim,
     weight_sharing=FLAGS.weight_sharing,
-    use_batch_norm=FLAGS.use_batch_norm)
+    use_batch_norm=FLAGS.use_batch_norm,
+    max_log_scale=FLAGS.max_log_scale)
 
 prior_n_embedding_mod = NEmbedding(FLAGS.n_embed_dim)
 prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)

@@ -32,6 +32,18 @@ class NConditionedGNFBlock(snt.AbstractModule):
     (x0 in the first sub-step, x1 in the second) and never appears in the
     log-det term directly — it can only ever influence log_det_jacobian
     through s, same as before the batch-norm addition.
+
+    s (the affine coupling scale) is bounded via max_log_scale * tanh(.)
+    before being used in exp(s) or accumulated into log_det_jacobian.
+    Unbounded s compounds multiplicatively across the num_timesteps
+    stacked layers -- even modest per-layer values can produce a large
+    overall scale change after 12 layers, and this bites hardest exactly
+    at generation time, when the s/t networks see inputs (samples from
+    the learned prior) they're less calibrated for than the real-data-
+    derived inputs seen during training. Confirmed empirically: even
+    with the batch-norm and prior-KL fixes both in place, a short
+    (1500-iteration) run's generated embeddings still had ~4x the L2
+    norm of real ones.
     """
 
     def __init__(self,
@@ -41,11 +53,13 @@ class NConditionedGNFBlock(snt.AbstractModule):
                  n_embed_dim=32,
                  weight_sharing=False,
                  use_batch_norm=False,
+                 max_log_scale=2.0,
                  name="NConditionedGNFBlock"):
         super(NConditionedGNFBlock, self).__init__(name=name)
         self.num_timesteps = num_timesteps
         self.weight_sharing = weight_sharing
         self.use_batch_norm = use_batch_norm
+        self.max_log_scale = max_log_scale
         with self._enter_variable_scope():
             self.n_embedding = NEmbedding(n_embed_dim)
             make_s_fn = make_film_conditioned_gnn_fn(hidden_dim,
@@ -85,6 +99,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
             else:
                 s = self.s[0][i](x0, n_embedding).nodes
                 t = self.t[0][i](x0, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             log_det_jacobian += tf.reduce_sum(s)
             x1 = x1.replace(nodes=x1.nodes * tf.exp(s) + t)
 
@@ -99,6 +114,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
             else:
                 s = self.s[1][i](x1, n_embedding).nodes
                 t = self.t[1][i](x1, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             log_det_jacobian += tf.reduce_sum(s)
             x0 = x0.replace(nodes=x0.nodes * tf.exp(s) + t)
 
@@ -117,6 +133,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
             else:
                 s = self.s[1][i](z1, n_embedding).nodes
                 t = self.t[1][i](z1, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             if self.use_batch_norm:
                 _, bn_generate = self.bns[1][i]
                 z1 = z1.replace(nodes=bn_generate.forward(z1.nodes))
@@ -128,6 +145,7 @@ class NConditionedGNFBlock(snt.AbstractModule):
             else:
                 s = self.s[0][i](z0, n_embedding).nodes
                 t = self.t[0][i](z0, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             if self.use_batch_norm:
                 _, bn_generate = self.bns[0][i]
                 z0 = z0.replace(nodes=bn_generate.forward(z0.nodes))

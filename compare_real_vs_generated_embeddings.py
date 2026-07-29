@@ -46,6 +46,7 @@ flags.DEFINE_integer('num_coupling_layers', 12, 'Must match training.')
 flags.DEFINE_integer('latent_dim', 2048, 'Must match training.')
 flags.DEFINE_integer('n_embed_dim', 32, 'Must match training.')
 flags.DEFINE_bool('weight_sharing', False, 'Must match training.')
+flags.DEFINE_float('max_log_scale', 2.0, 'Must match training.')
 flags.DEFINE_integer('sample_size', 32,
                      'Must match --sample_size used at training time '
                      '(fixes sample_n_node_placeholder\'s static shape).')
@@ -105,7 +106,8 @@ grevnet = NConditionedGNFBlock(
     hidden_dim=FLAGS.latent_dim,
     n_embed_dim=FLAGS.n_embed_dim,
     weight_sharing=FLAGS.weight_sharing,
-    use_batch_norm=True)
+    use_batch_norm=True,
+    max_log_scale=FLAGS.max_log_scale)
 
 prior_n_embedding_mod = NEmbedding(FLAGS.n_embed_dim)
 prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
