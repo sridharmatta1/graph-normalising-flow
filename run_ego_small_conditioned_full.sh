@@ -1,16 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=GNF_ego_conditioned
-#SBATCH --output=logs/ego_conditioned_output.log
-#SBATCH --error=logs/ego_conditioned_error.log
+#SBATCH --output=logs/ego_conditioned_output_%a.log
+#SBATCH --error=logs/ego_conditioned_error_%a.log
 #SBATCH --mail-user=matta@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
 #SBATCH --gres=gpu:2
+#SBATCH --array=1-5
 
 # ============================================================
 # Full-scale N-conditioned GNF on ego-small, mirroring matta's
-# baseline run.sh (results/ego/seed_1) as closely as possible for
-# a fair comparison:
+# baseline run.sh (results/ego/seed_$SEED) as closely as possible
+# for a fair comparison:
 #   - Steps 1, 2, 4, 5 unchanged (encoder, embeddings, generate,
 #     MMD -- none of these touch the GNF model or prior, so a
 #     conditioned checkpoint works with them exactly as-is).
@@ -23,10 +24,11 @@
 #     num_coupling_layers, iters, epochs, batch size, lr schedule,
 #     seed, checkpoint cadence) match the baseline exactly.
 #
-# Single seed, not the baseline's 1-5 array -- one full run
-# already produces the target 1024 generated graphs.
+# 1-5 seed array, matching the baseline's run.sh convention, for
+# a statistically rigorous (mean +/- std across seeds) comparison.
+# Each seed still generates the full NUMBER_TO_GENERATE=1024 graphs.
 # ============================================================
-SEED=1
+SEED=$SLURM_ARRAY_TASK_ID
 PYTHON=/home/matta/miniconda3/envs/gnf_2026/bin/python
 WORKDIR=/home/matta/graph-normalising-flow
 RESULTS_DIR=$WORKDIR/results/ego_conditioned/seed_$SEED
