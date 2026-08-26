@@ -5,6 +5,7 @@ wandb/
 logs/
 results/
 training_graphs/
+molecular_generation/data/
 *.pt
 *.pth
 *.ckpt
