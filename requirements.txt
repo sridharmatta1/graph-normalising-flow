@@ -10,4 +10,3 @@ numpy
 absl-py
 scipy
 pickle5
-rdkit
