@@ -1,11 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=GNF_comm_conditioned
-#SBATCH --output=logs/community_conditioned_output.log
-#SBATCH --error=logs/community_conditioned_error.log
+#SBATCH --output=logs/community_conditioned_output_%a.log
+#SBATCH --error=logs/community_conditioned_error_%a.log
 #SBATCH --mail-user=bidaralli@uni-hildesheim.de
 #SBATCH --mail-type=ALL
 #SBATCH --partition=STUD
 #SBATCH --gres=gpu:2
+#SBATCH --array=1-5
 
 # ============================================================
 # Full-scale N-conditioned GNF on community-small, mirroring
@@ -22,8 +23,11 @@
 #     rest of the hyperparameters (dataset, node_embedding_dim,
 #     num_coupling_layers, iters, epochs, batch size, lr schedule,
 #     seed, checkpoint cadence) match the baseline exactly.
+#
+# 1-5 seed array, matching the baseline's run.sh convention, for
+# a statistically rigorous (mean +/- std across seeds) comparison.
 # ============================================================
-SEED=1
+SEED=$SLURM_ARRAY_TASK_ID
 PYTHON=/home/bidaralli/miniconda3/envs/SRP_Graphs/bin/python
 WORKDIR=/home/bidaralli/Graph-Normalising-flow
 RESULTS_DIR=$WORKDIR/results/community_conditioned/seed_$SEED
