@@ -38,14 +38,9 @@ from rdkit import RDLogger
 
 RDLogger.DisableLog('rdApp.*')
 
-QM9_CSV_URL = "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/qm9.csv"
+from qm9_constants import ATOM_VOCAB, ATOM_TO_IDX
 
-# QM9 (v1) molecules only ever contain these 4 heavy elements (plus H,
-# which we don't model as explicit nodes -- standard convention for
-# graph-based molecule generation, since H count is recoverable from
-# valence).
-ATOM_VOCAB = ['C', 'N', 'O', 'F']
-ATOM_TO_IDX = {a: i for i, a in enumerate(ATOM_VOCAB)}
+QM9_CSV_URL = "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/qm9.csv"
 
 # 0 = no bond. Aromatic bonds are resolved via Kekulization before
 # this mapping is applied, so RDKit should never hand us

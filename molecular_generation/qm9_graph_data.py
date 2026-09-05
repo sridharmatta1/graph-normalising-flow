@@ -25,7 +25,7 @@ import graph_nets as gn
 import networkx as nx
 import numpy as np
 
-from preprocess_qm9 import ATOM_VOCAB
+from qm9_constants import ATOM_VOCAB
 
 NUM_ATOM_TYPES = len(ATOM_VOCAB)
 # 0=none (implicit -- never an explicit edge), 1=single, 2=double, 3=triple.
