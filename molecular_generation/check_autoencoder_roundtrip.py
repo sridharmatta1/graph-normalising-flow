@@ -10,6 +10,14 @@ right molecule. This is the molecular-autoencoder analogue of
 check_roundtrip.py, which caught the BatchNorm invertibility bug earlier
 in this project even though the flow's own loss/log-probs looked fine.
 
+Compares two decoding strategies side by side:
+  - naive: argmax every pair's bond-type logits independently. Nothing
+    stops this from giving an atom more total bond order than its
+    valence allows, since each pair is scored in isolation.
+  - valence-aware: qm9_chem.decode_bonds_valence_aware's greedy,
+    budget-respecting decode, built specifically to fix that failure
+    mode without any retraining.
+
 Rebuilds the model in the exact same construction order as
 train_molecular_autoencoder.py (via the same molecular_reconstruction_loss
 call) so variable names line up with the checkpoint. Read-only: restores
@@ -38,7 +46,7 @@ from gnn import TimestepGNN, dm_self_attn_gnn, make_mlp_model
 from functools import partial
 
 from molecular_gnn import embed_atom_features, molecular_reconstruction_loss
-from qm9_chem import graph_to_mol
+from qm9_chem import decode_bonds_valence_aware, graph_to_mol
 from qm9_graph_data import build_nx_graph
 from tf_helpers import reset_sess
 
@@ -123,6 +131,7 @@ def main(argv):
         {
             'atom_pred': losses['atom_pred'],
             'bond_pred': losses['bond_pred'],
+            'bond_probs': losses['bond_probs'],
             'atom_accuracy': losses['atom_accuracy'],
             'bond_accuracy': losses['bond_accuracy'],
         },
@@ -133,39 +142,57 @@ def main(argv):
          "atom_accuracy={:.4f} bond_accuracy={:.4f}".format(
              values['atom_accuracy'], values['bond_accuracy']))
 
+    def try_reconstruct(atom_pred, bond_matrix):
+        """Returns (recon_smiles or None, error or None)."""
+        try:
+            recon_mol = graph_to_mol(atom_pred, bond_matrix)
+        except Exception as e:
+            return None, e
+        return Chem.MolToSmiles(recon_mol), None
+
     n_nodes = [e['n_node'] for e in val_examples]
     n_node_cum = np.cumsum(n_nodes)
     start = 0
-    num_valid = 0
-    num_exact_match = 0
+    naive_valid = naive_match = 0
+    va_valid = va_match = 0
     for i, example in enumerate(val_examples):
         end = n_node_cum[i]
         atom_pred = values['atom_pred'][start:end].tolist()
-        bond_pred = values['bond_pred'][start:end, start:end]
+        naive_bonds = values['bond_pred'][start:end, start:end]
+        bond_probs = values['bond_probs'][start:end, start:end]
         start = end
 
-        try:
-            recon_mol = graph_to_mol(atom_pred, bond_pred)
-        except Exception as e:
-            print("  [{}] INVALID reconstruction ({}): orig={}".format(
-                i, e, example['smiles']))
-            continue
-
-        num_valid += 1
-        recon_smiles = Chem.MolToSmiles(recon_mol)
         orig_canonical = Chem.MolToSmiles(Chem.MolFromSmiles(example['smiles']))
-        match = recon_smiles == orig_canonical
-        num_exact_match += int(match)
-        print("  [{}] {} orig={} recon={}".format(
-            i, "MATCH" if match else "valid-but-different",
-            orig_canonical, recon_smiles))
+
+        naive_smiles, naive_err = try_reconstruct(atom_pred, naive_bonds)
+        va_bonds = decode_bonds_valence_aware(atom_pred, bond_probs)
+        va_smiles, va_err = try_reconstruct(atom_pred, va_bonds)
+
+        naive_valid += int(naive_smiles is not None)
+        naive_match += int(naive_smiles == orig_canonical)
+        va_valid += int(va_smiles is not None)
+        va_match += int(va_smiles == orig_canonical)
+
+        def describe(smiles, err):
+            if smiles is None:
+                return "INVALID ({})".format(err)
+            return "MATCH" if smiles == orig_canonical else "valid-but-different"
+
+        print("  [{}] orig={}".format(i, orig_canonical))
+        print("      naive:          {:<24} recon={}".format(
+            describe(naive_smiles, naive_err), naive_smiles))
+        print("      valence-aware:  {:<24} recon={}".format(
+            describe(va_smiles, va_err), va_smiles))
 
     n = len(val_examples)
     print("\n" + "=" * 60)
-    print("Valid reconstructions: {}/{} ({:.1f}%)".format(
-        num_valid, n, 100.0 * num_valid / n))
-    print("Exact matches to original molecule: {}/{} ({:.1f}%)".format(
-        num_exact_match, n, 100.0 * num_exact_match / n))
+    print("{:<20} {:>18} {:>18}".format("", "naive argmax", "valence-aware"))
+    print("{:<20} {:>15}/{:<3}({:>5.1f}%) {:>15}/{:<3}({:>5.1f}%)".format(
+        "Valid reconstructions:", naive_valid, n, 100.0 * naive_valid / n,
+        va_valid, n, 100.0 * va_valid / n))
+    print("{:<20} {:>15}/{:<3}({:>5.1f}%) {:>15}/{:<3}({:>5.1f}%)".format(
+        "Exact matches:", naive_match, n, 100.0 * naive_match / n,
+        va_match, n, 100.0 * va_match / n))
     print("=" * 60)
 
 

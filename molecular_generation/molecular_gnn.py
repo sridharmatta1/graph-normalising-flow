@@ -117,6 +117,7 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
     masked_bond_ce = mask * bond_ce
     bond_loss = tf.reduce_sum(masked_bond_ce)
     bond_pred = tf.argmax(bond_logits, axis=2, output_type=tf.int32)
+    bond_probs = tf.nn.softmax(bond_logits, axis=-1)
     bond_correct = tf.cast(tf.equal(bond_pred, true_bonds),
                            tf.float32) * mask
     bond_accuracy = tf.reduce_sum(bond_correct) / tf.reduce_sum(mask)
@@ -132,6 +133,7 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
         'bond_accuracy': bond_accuracy,
         'true_bonds': true_bonds,
         'bond_pred': bond_pred,
+        'bond_probs': bond_probs,
         'atom_pred': atom_pred,
         'atom_labels': atom_labels,
     }

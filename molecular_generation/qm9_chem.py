@@ -30,6 +30,63 @@ BOND_TO_IDX = {
 }
 IDX_TO_BOND = {v: k for k, v in BOND_TO_IDX.items()}
 
+# Standard valence (max total bond order) for a neutral atom of each
+# element -- matches mol_to_graph's assumption that QM9 molecules are
+# always neutral (formal charge 0).
+VALENCE = {'C': 4, 'N': 3, 'O': 2, 'F': 1}
+ATOM_VALENCE = [VALENCE[a] for a in ATOM_VOCAB]
+
+
+def decode_bonds_valence_aware(atom_types, bond_probs):
+    """Greedily builds a valence-respecting bond_matrix from per-pair bond
+    class probabilities, instead of independently argmax-ing every pair.
+
+    Independent per-pair argmax (what generate_graphs.py-style decoding
+    would naively do) has no way to know that two OTHER predicted bonds
+    on the same atom already used up its valence budget -- each pair is
+    scored in isolation. This is exactly why ~15% of round-trip
+    reconstructions came back invalid (an atom ending up with too many
+    bonds) despite ~97% per-pair accuracy: a small number of independently
+    "confident" predictions can still collectively overshoot an atom's
+    valence.
+
+    This processes candidate bonds in descending order of predicted-class
+    confidence, accepting each only if it fits within both endpoint
+    atoms' remaining valence budget -- downgrading to a lower bond order
+    (e.g. double -> single) rather than rejecting outright when the full
+    predicted order doesn't fit, to preserve as much of the model's
+    belief as the hard constraint allows. The result is valid by
+    construction: no atom can ever exceed its valence.
+
+    atom_types: sequence of length n, values indexing ATOM_VOCAB.
+    bond_probs: [n, n, NUM_BOND_TYPES] array of per-pair class
+        probabilities (e.g. softmax of the model's bond logits).
+    """
+    n = len(atom_types)
+    remaining_valence = np.array(
+        [ATOM_VALENCE[a] for a in atom_types], dtype=np.int32)
+    bond_matrix = np.zeros((n, n), dtype=np.int32)
+
+    candidates = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            pred_order = int(np.argmax(bond_probs[i, j]))
+            if pred_order == 0:
+                continue
+            confidence = float(bond_probs[i, j, pred_order])
+            candidates.append((confidence, i, j, pred_order))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    for confidence, i, j, pred_order in candidates:
+        order = min(pred_order, remaining_valence[i], remaining_valence[j])
+        if order >= 1:
+            bond_matrix[i, j] = order
+            bond_matrix[j, i] = order
+            remaining_valence[i] -= order
+            remaining_valence[j] -= order
+
+    return bond_matrix
+
 
 def mol_to_graph(smiles):
     """SMILES -> (atom_types, bond_matrix), or None if unsupported."""
