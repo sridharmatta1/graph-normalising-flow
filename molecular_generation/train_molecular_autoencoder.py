@@ -35,6 +35,9 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+import absl.logging
+logging.root.removeHandler(absl.logging._absl_handler)
+absl.logging._warn_preinit_stderr = False
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from gnn import TimestepGNN, dm_self_attn_gnn, make_mlp_model
@@ -76,6 +79,13 @@ flags.DEFINE_bool('use_batch_norm', False,
                   'for community/ego, so this defaults off; can be '
                   'revisited once the basic pipeline is validated.')
 flags.DEFINE_bool('residual', False, '')
+flags.DEFINE_float(
+    'bond_class_weight', 1.0,
+    'Upweights the 3 real-bond classes (single/double/triple) relative '
+    'to the dominant "no bond" class in the loss. 1.0 = no reweighting. '
+    'Targets the "valid-but-different" gap: most pairs are unbonded, so '
+    'unweighted loss can reach high aggregate bond_accuracy mostly via '
+    'the easy majority class while still getting real bonds wrong.')
 
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/autoencoder',
@@ -143,7 +153,8 @@ def main(argv):
 
     losses = molecular_reconstruction_loss(
         raw_graph_phs, gnn_output, FLAGS.node_embedding_dim,
-        FLAGS.latent_dim, FLAGS.num_mlp_layers)
+        FLAGS.latent_dim, FLAGS.num_mlp_layers,
+        bond_class_weight=FLAGS.bond_class_weight)
 
     global_step = tf.Variable(0, trainable=False, name='global_step')
     optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.lr)
@@ -157,6 +168,7 @@ def main(argv):
     tf.summary.scalar('bond_loss', losses['bond_loss'])
     tf.summary.scalar('atom_accuracy', losses['atom_accuracy'])
     tf.summary.scalar('bond_accuracy', losses['bond_accuracy'])
+    tf.summary.scalar('real_bond_accuracy', losses['real_bond_accuracy'])
     merged = tf.summary.merge_all()
 
     config = tf.ConfigProto()
@@ -184,11 +196,13 @@ def main(argv):
         'bond_loss': losses['bond_loss'],
         'atom_accuracy': losses['atom_accuracy'],
         'bond_accuracy': losses['bond_accuracy'],
+        'real_bond_accuracy': losses['real_bond_accuracy'],
     }
     eval_values_map = {
         'eval_total_loss': losses['total_loss'],
         'eval_atom_accuracy': losses['atom_accuracy'],
         'eval_bond_accuracy': losses['bond_accuracy'],
+        'eval_real_bond_accuracy': losses['real_bond_accuracy'],
     }
     for k, v in values_map.items():
         if k not in ('merged', 'step_op'):
@@ -208,8 +222,12 @@ def main(argv):
                        .format(train_values['total_loss'],
                                train_values['atom_loss'],
                                train_values['bond_loss']))
-            logger.info("atom_accuracy={:.4f} bond_accuracy={:.4f}".format(
-                train_values['atom_accuracy'], train_values['bond_accuracy']))
+            logger.info(
+                "atom_accuracy={:.4f} bond_accuracy={:.4f} "
+                "real_bond_accuracy={:.4f}".format(
+                    train_values['atom_accuracy'],
+                    train_values['bond_accuracy'],
+                    train_values['real_bond_accuracy']))
             if WANDB_AVAILABLE:
                 wandb.log({
                     "train/total_loss": float(train_values['total_loss']),
@@ -217,6 +235,7 @@ def main(argv):
                     "train/bond_loss": float(train_values['bond_loss']),
                     "train/atom_accuracy": float(train_values['atom_accuracy']),
                     "train/bond_accuracy": float(train_values['bond_accuracy']),
+                    "train/real_bond_accuracy": float(train_values['real_bond_accuracy']),
                 }, step=iteration)
 
         if iteration % FLAGS.eval_every_n_steps == 0:
@@ -224,16 +243,19 @@ def main(argv):
             eval_values = sess.run(
                 eval_values_map,
                 feed_dict={raw_graph_phs: test_batch, is_training: False})
-            logger.info("EVAL iteration {}: total_loss={:.4f} "
-                       "atom_accuracy={:.4f} bond_accuracy={:.4f}".format(
-                           iteration, eval_values['eval_total_loss'],
-                           eval_values['eval_atom_accuracy'],
-                           eval_values['eval_bond_accuracy']))
+            logger.info(
+                "EVAL iteration {}: total_loss={:.4f} atom_accuracy={:.4f} "
+                "bond_accuracy={:.4f} real_bond_accuracy={:.4f}".format(
+                    iteration, eval_values['eval_total_loss'],
+                    eval_values['eval_atom_accuracy'],
+                    eval_values['eval_bond_accuracy'],
+                    eval_values['eval_real_bond_accuracy']))
             if WANDB_AVAILABLE:
                 wandb.log({
                     "eval/total_loss": float(eval_values['eval_total_loss']),
                     "eval/atom_accuracy": float(eval_values['eval_atom_accuracy']),
                     "eval/bond_accuracy": float(eval_values['eval_bond_accuracy']),
+                    "eval/real_bond_accuracy": float(eval_values['eval_real_bond_accuracy']),
                 }, step=iteration)
 
         if iteration % FLAGS.save_every_n_steps == 0:

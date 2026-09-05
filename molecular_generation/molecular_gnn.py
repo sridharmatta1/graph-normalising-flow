@@ -90,12 +90,22 @@ def true_bond_type_matrix(raw_graph_phs, dim):
 
 def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
                                   node_embedding_dim, latent_dim,
-                                  num_layers=2):
+                                  num_layers=2, bond_class_weight=1.0):
     """Cross-entropy on atom-type + bond-type reconstruction, replacing
     gnn.py's binary_loss (which only ever reconstructed edge presence).
     Masking follows binary_loss's pattern exactly: loss_mask() zeroes out
     cross-graph pairs within a batch (block-diagonal), remove_diag()
     zeroes out self-pairs (meaningless for bonds, same as for edges).
+
+    bond_class_weight (>=1.0) upweights the three real-bond classes
+    (single/double/triple) relative to the dominant "no bond" class in
+    the loss. Most atom pairs in a molecule aren't bonded, so the
+    unweighted loss can hit high aggregate bond_accuracy mostly by
+    nailing the easy majority class while still getting real bonds
+    wrong -- exactly what shows up as "valid-but-different"
+    reconstructions (right shape, wrong bond somewhere) rather than
+    exact matches. Weighting the loss towards real bonds specifically
+    targets that gap. 1.0 = no reweighting (every pair equal, as before).
     """
     num_nodes = tf.reduce_sum(raw_graph_phs.n_node)
 
@@ -114,13 +124,21 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
     bond_ce = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=true_bonds, logits=bond_logits)
     mask = remove_diag(loss_mask(raw_graph_phs))
-    masked_bond_ce = mask * bond_ce
+    class_weight = tf.constant(
+        [1.0, bond_class_weight, bond_class_weight, bond_class_weight],
+        dtype=tf.float32)
+    per_pair_weight = tf.gather(class_weight, true_bonds)
+    masked_bond_ce = mask * per_pair_weight * bond_ce
     bond_loss = tf.reduce_sum(masked_bond_ce)
     bond_pred = tf.argmax(bond_logits, axis=2, output_type=tf.int32)
     bond_probs = tf.nn.softmax(bond_logits, axis=-1)
     bond_correct = tf.cast(tf.equal(bond_pred, true_bonds),
                            tf.float32) * mask
     bond_accuracy = tf.reduce_sum(bond_correct) / tf.reduce_sum(mask)
+
+    real_bond_mask = mask * tf.cast(tf.greater(true_bonds, 0), tf.float32)
+    real_bond_accuracy = (tf.reduce_sum(bond_correct * real_bond_mask) /
+                          tf.maximum(tf.reduce_sum(real_bond_mask), 1.0))
 
     total_loss = atom_loss + bond_loss
     mean_loss = total_loss / tf.cast(num_nodes, tf.float32)
@@ -131,6 +149,7 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
         'bond_loss': bond_loss,
         'atom_accuracy': atom_accuracy,
         'bond_accuracy': bond_accuracy,
+        'real_bond_accuracy': real_bond_accuracy,
         'true_bonds': true_bonds,
         'bond_pred': bond_pred,
         'bond_probs': bond_probs,
