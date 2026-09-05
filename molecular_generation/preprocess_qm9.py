@@ -34,23 +34,11 @@ from absl import app
 from absl import flags
 import numpy as np
 from rdkit import Chem
-from rdkit import RDLogger
-
-RDLogger.DisableLog('rdApp.*')
 
 from qm9_constants import ATOM_VOCAB, ATOM_TO_IDX
+from qm9_chem import mol_to_graph, graph_to_mol
 
 QM9_CSV_URL = "https://deepchemdata.s3-us-west-1.amazonaws.com/datasets/qm9.csv"
-
-# 0 = no bond. Aromatic bonds are resolved via Kekulization before
-# this mapping is applied, so RDKit should never hand us
-# BondType.AROMATIC here.
-BOND_TO_IDX = {
-    Chem.BondType.SINGLE: 1,
-    Chem.BondType.DOUBLE: 2,
-    Chem.BondType.TRIPLE: 3,
-}
-IDX_TO_BOND = {v: k for k, v in BOND_TO_IDX.items()}
 
 flags.DEFINE_string('qm9_csv', '', 'Path to a local qm9.csv. If empty, '
                     'downloads it from QM9_CSV_URL into --output_dir.')
@@ -74,54 +62,6 @@ def download_qm9_csv(dest_path):
     print("Downloading QM9 CSV from {} ...".format(QM9_CSV_URL))
     urllib.request.urlretrieve(QM9_CSV_URL, dest_path)
     print("Saved to {}".format(dest_path))
-
-
-def mol_to_graph(smiles):
-    """SMILES -> (atom_types, bond_matrix), or None if unsupported."""
-    mol = Chem.MolFromSmiles(smiles)
-    if mol is None:
-        return None
-    try:
-        Chem.Kekulize(mol, clearAromaticFlags=True)
-    except Chem.KekulizeException:
-        return None
-
-    atom_types = []
-    for atom in mol.GetAtoms():
-        symbol = atom.GetSymbol()
-        if symbol not in ATOM_TO_IDX:
-            return None  # outside the QM9 vocab -- shouldn't happen.
-        if atom.GetFormalCharge() != 0:
-            return None  # QM9 molecules are neutral; be defensive.
-        atom_types.append(ATOM_TO_IDX[symbol])
-
-    n = mol.GetNumAtoms()
-    bond_matrix = np.zeros((n, n), dtype=np.int32)
-    for bond in mol.GetBonds():
-        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        bond_type = bond.GetBondType()
-        if bond_type not in BOND_TO_IDX:
-            return None  # e.g. unexpected bond type after Kekulize.
-        bond_matrix[i, j] = BOND_TO_IDX[bond_type]
-        bond_matrix[j, i] = BOND_TO_IDX[bond_type]
-
-    return atom_types, bond_matrix
-
-
-def graph_to_mol(atom_types, bond_matrix):
-    """Inverse of mol_to_graph -- used only to validate losslessness."""
-    rw_mol = Chem.RWMol()
-    for a in atom_types:
-        rw_mol.AddAtom(Chem.Atom(ATOM_VOCAB[a]))
-    n = len(atom_types)
-    for i in range(n):
-        for j in range(i + 1, n):
-            b = bond_matrix[i, j]
-            if b != 0:
-                rw_mol.AddBond(i, j, IDX_TO_BOND[b])
-    mol = rw_mol.GetMol()
-    Chem.SanitizeMol(mol)
-    return mol
 
 
 def main(argv):

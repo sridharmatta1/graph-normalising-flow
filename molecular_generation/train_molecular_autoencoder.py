@@ -40,26 +40,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from gnn import TimestepGNN, dm_self_attn_gnn, make_mlp_model
 
 from molecular_gnn import embed_atom_features, molecular_reconstruction_loss
-
-
-def reset_sess(config=None):
-    """Inlined from utils.py's reset_sess -- utils.py also imports
-    matplotlib.pyplot at module level (for unrelated plotting helpers
-    this script never calls), which has repeatedly broken on the
-    cluster's Python 3.6 conda envs (libtiff/Pillow ABI mismatches).
-    This avoids that dependency entirely rather than fighting conda
-    over a library this script doesn't actually need.
-
-    Deliberately does NOT call tf.reset_default_graph() -- this is
-    called after the full graph (placeholders, losses, optimizer) is
-    already built, so resetting the graph here would wipe out
-    everything just constructed. utils.py's original doesn't reset the
-    graph either; it only manages Session lifecycle across repeated
-    calls, which this script (a single reset_sess() call) doesn't need.
-    """
-    sess = tf.Session(config=config)
-    sess.run(tf.global_variables_initializer())
-    return sess
+from tf_helpers import reset_sess
 from qm9_graph_data import QM9GraphDataset
 
 warnings.filterwarnings("ignore")
