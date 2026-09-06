@@ -45,9 +45,10 @@ from gnn import TimestepGNN, dm_self_attn_gnn, make_mlp_model
 
 from functools import partial
 
+from bond_aware_attention import bond_aware_self_attn_gnn
 from molecular_gnn import embed_atom_features, molecular_reconstruction_loss
 from qm9_chem import decode_bonds_valence_aware, graph_to_mol
-from qm9_graph_data import build_nx_graph
+from qm9_graph_data import NUM_BOND_TYPES, build_nx_graph
 from tf_helpers import reset_sess
 
 warnings.filterwarnings("ignore")
@@ -76,6 +77,10 @@ flags.DEFINE_integer(
     'num_bond_refine_steps', 1,
     'Must match training -- more refine steps means more decoder '
     'variables in the checkpoint (each round has its own weights).')
+flags.DEFINE_bool(
+    'use_bond_aware_attention', False,
+    'Must match training -- see bond_aware_attention.py / '
+    'train_molecular_autoencoder.py\'s flag docstring.')
 
 FLAGS = flags.FLAGS
 
@@ -101,17 +106,31 @@ def main(argv):
 
     make_mlp_fn = partial(make_mlp_model, FLAGS.latent_dim,
                           FLAGS.node_embedding_dim, FLAGS.num_mlp_layers)
-    attn_gnn_fn = partial(
-        dm_self_attn_gnn,
-        kq_dim=FLAGS.attn_kq_dim,
-        v_dim=FLAGS.attn_v_dim,
-        make_mlp_fn=make_mlp_fn,
-        num_heads=FLAGS.attn_num_heads,
-        concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
-        concat=True,
-        residual=False,
-        layer_norm=False,
-        kq_dim_division=True)
+    if FLAGS.use_bond_aware_attention:
+        attn_gnn_fn = partial(
+            bond_aware_self_attn_gnn,
+            kq_dim=FLAGS.attn_kq_dim,
+            v_dim=FLAGS.attn_v_dim,
+            make_mlp_fn=make_mlp_fn,
+            num_heads=FLAGS.attn_num_heads,
+            concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
+            num_bond_types=NUM_BOND_TYPES,
+            concat=True,
+            residual=False,
+            layer_norm=False,
+            kq_dim_division=True)
+    else:
+        attn_gnn_fn = partial(
+            dm_self_attn_gnn,
+            kq_dim=FLAGS.attn_kq_dim,
+            v_dim=FLAGS.attn_v_dim,
+            make_mlp_fn=make_mlp_fn,
+            num_heads=FLAGS.attn_num_heads,
+            concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
+            concat=True,
+            residual=False,
+            layer_norm=False,
+            kq_dim_division=True)
 
     is_training = tf.placeholder(tf.bool, name="is_training")
     gnn = TimestepGNN(

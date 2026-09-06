@@ -5,9 +5,12 @@ minimize reconstruction loss), but reconstructs atom types + bond types
 (molecular_gnn.py's heads) instead of a single edge/no-edge adjacency
 (gnn.py's pred_adj).
 
-Reuses gnn.py's TimestepGNN + dm_self_attn_gnn (the actual message-passing
-GNN) completely unchanged -- only the input embedding, decoder heads, and
-loss (all in molecular_gnn.py) are new.
+Reuses gnn.py's TimestepGNN (the message-passing loop) unchanged, and by
+default gnn.py's dm_self_attn_gnn (the attention cell) too --
+--use_bond_aware_attention swaps in bond_aware_attention.py's variant
+instead, which adds a learned bond-type bias to attention (see that
+module's docstring for why). The input embedding, decoder heads, and
+loss (all in molecular_gnn.py) are new either way.
 
 Run small first (--max_molecules), matching this project's established
 pattern of validating cheaply before committing to a full run: this
@@ -42,9 +45,10 @@ absl.logging._warn_preinit_stderr = False
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from gnn import TimestepGNN, dm_self_attn_gnn, make_mlp_model
 
+from bond_aware_attention import bond_aware_self_attn_gnn
 from molecular_gnn import embed_atom_features, molecular_reconstruction_loss
 from tf_helpers import reset_sess
-from qm9_graph_data import QM9GraphDataset
+from qm9_graph_data import NUM_BOND_TYPES, QM9GraphDataset
 
 warnings.filterwarnings("ignore")
 
@@ -79,6 +83,16 @@ flags.DEFINE_bool('use_batch_norm', False,
                   'for community/ego, so this defaults off; can be '
                   'revisited once the basic pipeline is validated.')
 flags.DEFINE_bool('residual', False, '')
+flags.DEFINE_bool(
+    'use_bond_aware_attention', False,
+    'Use bond_aware_attention.py\'s BondAwareSelfAttentionMLP instead '
+    'of gnn.py\'s dm_self_attn_gnn. The original already restricts '
+    'attention to real bonded neighbors (confirmed by reading '
+    'DMSelfAttention._build), but never uses the bond\'s TYPE '
+    '(single/double/triple) for anything -- a double bond and a single '
+    'bond produce identical attention behavior. This adds a learned '
+    'per-bond-type bias to attention logits and values so bond type can '
+    'actually influence message passing. False = original behavior.')
 flags.DEFINE_float(
     'bond_class_weight', 1.0,
     'Upweights the 3 real-bond classes (single/double/triple) relative '
@@ -136,17 +150,31 @@ def main(argv):
 
     make_mlp_fn = partial(make_mlp_model, FLAGS.latent_dim,
                           FLAGS.node_embedding_dim, FLAGS.num_mlp_layers)
-    attn_gnn_fn = partial(
-        dm_self_attn_gnn,
-        kq_dim=FLAGS.attn_kq_dim,
-        v_dim=FLAGS.attn_v_dim,
-        make_mlp_fn=make_mlp_fn,
-        num_heads=FLAGS.attn_num_heads,
-        concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
-        concat=True,
-        residual=False,
-        layer_norm=False,
-        kq_dim_division=True)
+    if FLAGS.use_bond_aware_attention:
+        attn_gnn_fn = partial(
+            bond_aware_self_attn_gnn,
+            kq_dim=FLAGS.attn_kq_dim,
+            v_dim=FLAGS.attn_v_dim,
+            make_mlp_fn=make_mlp_fn,
+            num_heads=FLAGS.attn_num_heads,
+            concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
+            num_bond_types=NUM_BOND_TYPES,
+            concat=True,
+            residual=False,
+            layer_norm=False,
+            kq_dim_division=True)
+    else:
+        attn_gnn_fn = partial(
+            dm_self_attn_gnn,
+            kq_dim=FLAGS.attn_kq_dim,
+            v_dim=FLAGS.attn_v_dim,
+            make_mlp_fn=make_mlp_fn,
+            num_heads=FLAGS.attn_num_heads,
+            concat_heads_output_dim=FLAGS.attn_concat_heads_output_dim,
+            concat=True,
+            residual=False,
+            layer_norm=False,
+            kq_dim_division=True)
 
     is_training = tf.placeholder(tf.bool, name="is_training")
     gnn = TimestepGNN(
