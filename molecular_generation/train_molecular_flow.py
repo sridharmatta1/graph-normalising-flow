@@ -1,7 +1,10 @@
 """Phase 5: trains the (unconditioned) GNF flow on Phase 3's extracted
 molecular embeddings -- the molecular analogue of train_grevnet_with_data.py.
-Reuses grevnet.py's GNFBlock completely unchanged (N-conditioning is
-deliberately deferred, matching the original project plan).
+Uses molecular_flow.py's MolecularGNFBlock (grevnet.py's GNFBlock
+structure, plus ActNorm + scale-clamping fixes already proven
+necessary for this project's coupling-layer flows -- see that module's
+docstring for why the plain GNFBlock wasn't stable here). N-conditioning
+is deliberately deferred, matching the original project plan.
 
 The flow never sees real molecules or Phase 2's encoder/decoder -- it
 only ever operates on the frozen encoder's embedding vectors, learning
@@ -55,8 +58,8 @@ tfd = tfp.distributions
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from gnn import dm_self_attn_gnn, make_mlp_model
-from grevnet import GNFBlock
 
+from molecular_flow import MolecularGNFBlock
 from tf_helpers import reset_sess, senders_receivers
 
 warnings.filterwarnings("ignore")
@@ -80,14 +83,17 @@ flags.DEFINE_integer('attn_kq_dim', 64, '')
 flags.DEFINE_integer('attn_v_dim', 64, '')
 flags.DEFINE_integer('attn_num_heads', 2, '')
 flags.DEFINE_integer('attn_concat_heads_output_dim', 64, '')
-flags.DEFINE_bool('use_batch_norm', True,
-                  'GNFBlock\'s own (real) BatchNorm -- not the ActNorm '
-                  'fix from the N-conditioned model. The plain GNFBlock '
-                  'this reuses is the same one already validated '
-                  'working for the community/ego baseline, so this '
-                  'should be fine as-is.')
 flags.DEFINE_bool('weight_sharing', False, '')
-flags.DEFINE_bool('use_efficient_backprop', True, '')
+flags.DEFINE_float(
+    'max_log_scale', 2.0,
+    'Bounds the affine coupling scale s via max_log_scale*tanh(s/'
+    'max_log_scale) before exp(s), so exp(s) is capped regardless of '
+    'what the s network outputs. The plain grevnet.py GNFBlock this '
+    'was originally built on (no clamping, real BatchNorm) diverged to '
+    'NaN within ~1300 iterations when trained on molecular embeddings '
+    '-- log_det_jacobian grew without bound every logged step, the '
+    'same signature this project already fixed for NConditionedGNFBlock '
+    'via this exact clamping (see molecular_flow.py).')
 
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/flow', '')
@@ -219,9 +225,9 @@ def main(argv):
         layer_norm=False,
         kq_dim_division=True)
 
-    grevnet = GNFBlock(attn_gnn_fn, FLAGS.num_coupling_layers, half_dim,
-                       FLAGS.use_batch_norm, FLAGS.weight_sharing,
-                       FLAGS.use_efficient_backprop)
+    grevnet = MolecularGNFBlock(attn_gnn_fn, FLAGS.num_coupling_layers,
+                                half_dim, FLAGS.weight_sharing,
+                                FLAGS.max_log_scale)
 
     grevnet_reverse_output, log_det_jacobian = grevnet(graphs_tuple,
                                                        inverse=True)
