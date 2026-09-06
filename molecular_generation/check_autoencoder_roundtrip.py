@@ -72,6 +72,10 @@ flags.DEFINE_integer('num_processing_steps', 4, '')
 flags.DEFINE_bool('weight_sharing', True, '')
 flags.DEFINE_bool('use_batch_norm', False, '')
 flags.DEFINE_bool('residual', False, '')
+flags.DEFINE_integer(
+    'num_bond_refine_steps', 1,
+    'Must match training -- more refine steps means more decoder '
+    'variables in the checkpoint (each round has its own weights).')
 
 FLAGS = flags.FLAGS
 
@@ -121,7 +125,8 @@ def main(argv):
 
     losses = molecular_reconstruction_loss(
         raw_graph_phs, gnn_output, FLAGS.node_embedding_dim,
-        FLAGS.latent_dim, FLAGS.num_mlp_layers)
+        FLAGS.latent_dim, FLAGS.num_mlp_layers,
+        num_bond_refine_steps=FLAGS.num_bond_refine_steps)
 
     sess = reset_sess()
     saver = tf.train.Saver()

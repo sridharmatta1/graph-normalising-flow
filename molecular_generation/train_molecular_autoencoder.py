@@ -86,6 +86,13 @@ flags.DEFINE_float(
     'Targets the "valid-but-different" gap: most pairs are unbonded, so '
     'unweighted loss can reach high aggregate bond_accuracy mostly via '
     'the easy majority class while still getting real bonds wrong.')
+flags.DEFINE_integer(
+    'num_bond_refine_steps', 1,
+    'Rounds of iterative bond-logit refinement (molecular_gnn.py\'s '
+    'refine_bond_logits) -- each round after the first sees the '
+    'previous round\'s tentative per-atom remaining valence, letting '
+    'bond decisions on the same atom inform each other. 1 = original '
+    'single-shot behavior (no refinement).')
 
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/autoencoder',
@@ -154,7 +161,8 @@ def main(argv):
     losses = molecular_reconstruction_loss(
         raw_graph_phs, gnn_output, FLAGS.node_embedding_dim,
         FLAGS.latent_dim, FLAGS.num_mlp_layers,
-        bond_class_weight=FLAGS.bond_class_weight)
+        bond_class_weight=FLAGS.bond_class_weight,
+        num_bond_refine_steps=FLAGS.num_bond_refine_steps)
 
     global_step = tf.Variable(0, trainable=False, name='global_step')
     optimizer = tf.train.AdamOptimizer(learning_rate=FLAGS.lr)

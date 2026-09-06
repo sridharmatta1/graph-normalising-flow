@@ -26,7 +26,10 @@ import tensorflow as tf
 
 from gnn import make_mlp_model
 from loss import loss_mask, remove_diag
+from qm9_chem import ATOM_VALENCE
 from qm9_graph_data import NUM_ATOM_TYPES, NUM_BOND_TYPES
+
+BOND_ORDER = [0.0, 1.0, 2.0, 3.0]  # bond class index -> valence it consumes.
 
 
 def embed_atom_features(graph_phs, latent_dim, node_embedding_dim,
@@ -66,6 +69,70 @@ def bond_type_logits(gnn_output, node_embedding_dim, latent_dim,
     return tf.reshape(logits_flat, [n, n, NUM_BOND_TYPES])
 
 
+def refine_bond_logits(gnn_output, raw_graph_phs, atom_labels,
+                       node_embedding_dim, latent_dim, num_layers,
+                       num_refine_steps=1):
+    """Iteratively refines bond-type logits over num_refine_steps rounds,
+    each conditioned on the current round's *expected* remaining valence
+    per atom (computed softly/differentiably from the current bond
+    probabilities) -- lets bond decisions on the same atom inform each
+    other, instead of a single independent shot from node embeddings
+    alone (what bond_type_logits does on its own).
+
+    This targets the "right atom/bond count, wrong specific position"
+    errors left over after class-weighting and more model capacity
+    stopped helping (see run_molecular_autoencoder_v2/v3.sh) -- e.g. a
+    double bond predicted one position over from where it actually is.
+    Neither of those fixes lets one bond decision influence another;
+    this does, by feeding each round's tentative global bond assignment
+    back into the node embeddings before re-predicting.
+
+    A full sequential/autoregressive decoder (fixed left-to-right order,
+    each pair conditioned strictly on already-decided earlier pairs) was
+    considered instead, but needs a tf.while_loop with a growing,
+    gather/scatter-heavy state -- too easy to get subtly wrong to write
+    blind (this project's dev machine can't run a real TF graph to test
+    it before it reaches the cluster). This version reuses the static,
+    fixed-number-of-rounds unrolling loss_mask() already uses elsewhere
+    in this codebase -- every round has the same shapes, so there's much
+    less room for a shape/index bug to hide in.
+
+    num_refine_steps=1 (the default) reproduces the original single-shot
+    behavior exactly (the loop body never runs).
+
+    atom_labels must be the ground-truth atom type per node (this
+    reconstructs real molecules the model was shown, not free
+    generation -- Phase 6 would need to decide how to get atom types
+    for genuinely novel samples, a separate problem).
+    """
+    mask = remove_diag(loss_mask(raw_graph_phs))
+    bond_order = tf.constant(BOND_ORDER, dtype=tf.float32)
+    atom_valence = tf.gather(
+        tf.constant(ATOM_VALENCE, dtype=tf.float32), atom_labels)  # [N]
+
+    nodes = gnn_output.nodes
+    bond_logits = bond_type_logits(gnn_output, node_embedding_dim,
+                                   latent_dim, num_layers)
+
+    for _ in range(num_refine_steps - 1):
+        bond_probs = tf.nn.softmax(bond_logits, axis=-1)
+        expected_order = tf.reduce_sum(bond_probs * bond_order, axis=-1)
+        expected_used_valence = tf.reduce_sum(expected_order * mask, axis=1)
+        remaining_valence = tf.expand_dims(
+            atom_valence - expected_used_valence, axis=1)  # [N, 1]
+
+        update_mlp = make_mlp_model(latent_dim, node_embedding_dim,
+                                    num_layers)
+        nodes = nodes + update_mlp(tf.concat([nodes, remaining_valence],
+                                             axis=1))
+
+        bond_logits = bond_type_logits(
+            gnn_output.replace(nodes=nodes), node_embedding_dim,
+            latent_dim, num_layers)
+
+    return bond_logits
+
+
 def true_atom_type(raw_graph_phs):
     """raw_graph_phs must be the placeholder BEFORE embed_atom_features
     projects it -- its .nodes are still the original one-hot atom labels.
@@ -90,7 +157,8 @@ def true_bond_type_matrix(raw_graph_phs, dim):
 
 def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
                                   node_embedding_dim, latent_dim,
-                                  num_layers=2, bond_class_weight=1.0):
+                                  num_layers=2, bond_class_weight=1.0,
+                                  num_bond_refine_steps=1):
     """Cross-entropy on atom-type + bond-type reconstruction, replacing
     gnn.py's binary_loss (which only ever reconstructed edge presence).
     Masking follows binary_loss's pattern exactly: loss_mask() zeroes out
@@ -106,6 +174,9 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
     reconstructions (right shape, wrong bond somewhere) rather than
     exact matches. Weighting the loss towards real bonds specifically
     targets that gap. 1.0 = no reweighting (every pair equal, as before).
+
+    num_bond_refine_steps (>=1) controls refine_bond_logits' iterative
+    refinement rounds. 1 = single-shot (original behavior).
     """
     num_nodes = tf.reduce_sum(raw_graph_phs.n_node)
 
@@ -119,8 +190,9 @@ def molecular_reconstruction_loss(raw_graph_phs, gnn_output,
         tf.cast(tf.equal(atom_pred, atom_labels), tf.float32))
 
     true_bonds = true_bond_type_matrix(raw_graph_phs, num_nodes)
-    bond_logits = bond_type_logits(gnn_output, node_embedding_dim,
-                                   latent_dim, num_layers)
+    bond_logits = refine_bond_logits(
+        gnn_output, raw_graph_phs, atom_labels, node_embedding_dim,
+        latent_dim, num_layers, num_refine_steps=num_bond_refine_steps)
     bond_ce = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=true_bonds, logits=bond_logits)
     mask = remove_diag(loss_mask(raw_graph_phs))
