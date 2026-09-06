@@ -118,13 +118,23 @@ def refine_bond_logits(gnn_output, raw_graph_phs, atom_labels,
         bond_probs = tf.nn.softmax(bond_logits, axis=-1)
         expected_order = tf.reduce_sum(bond_probs * bond_order, axis=-1)
         expected_used_valence = tf.reduce_sum(expected_order * mask, axis=1)
-        remaining_valence = tf.expand_dims(
-            atom_valence - expected_used_valence, axis=1)  # [N, 1]
+        # reshape (not expand_dims) -- loss_mask() builds `mask` via a
+        # tf.while_loop with infer_shape=False, so mask's static shape
+        # is fully undetermined, and that uncertainty otherwise
+        # propagates through the ops above into remaining_valence's
+        # shape. reshape with an explicit target shape overrides that
+        # rather than inheriting it, which the update_mlp's Linear
+        # layer below needs (Sonnet requires a statically-known input
+        # size to build its weights).
+        remaining_valence = tf.reshape(
+            atom_valence - expected_used_valence, [-1, 1])  # [N, 1]
 
         update_mlp = make_mlp_model(latent_dim, node_embedding_dim,
                                     num_layers)
-        nodes = nodes + update_mlp(tf.concat([nodes, remaining_valence],
-                                             axis=1))
+        update_input = tf.concat([nodes, remaining_valence], axis=1)
+        update_input = tf.reshape(
+            update_input, [-1, node_embedding_dim + 1])
+        nodes = nodes + update_mlp(update_input)
 
         bond_logits = bond_type_logits(
             gnn_output.replace(nodes=nodes), node_embedding_dim,
