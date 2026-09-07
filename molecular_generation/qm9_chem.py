@@ -103,7 +103,12 @@ def decode_bonds_valence_aware(atom_types, bond_probs):
             for j in range(n):
                 if j == i or remaining_valence[j] <= 0:
                     continue
-                max_order = min(remaining_valence[i], remaining_valence[j])
+                # Cap at the highest actual bond class (bond_probs.shape[-1]-1,
+                # e.g. 3 for triple bond) -- valence alone can exceed that
+                # (e.g. two carbons each with a full valence-4 budget),
+                # but there's no "quadruple bond" class to index into.
+                max_order = min(remaining_valence[i], remaining_valence[j],
+                                bond_probs.shape[-1] - 1)
                 for order in range(1, max_order + 1):
                     prob = bond_probs[i, j, order]
                     if prob > best_prob:
