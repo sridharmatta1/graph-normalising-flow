@@ -85,6 +85,35 @@ def decode_bonds_valence_aware(atom_types, bond_probs):
             remaining_valence[i] -= order
             remaining_valence[j] -= order
 
+    # Rescue pass: a pair only becomes a candidate above if THAT PAIR's
+    # own argmax is a real bond type -- an atom whose argmax is "no
+    # bond" against every other atom never enters the candidate list at
+    # all, and is guaranteed to end up isolated, even if it had
+    # non-trivial (just not argmax-winning) probability on some real
+    # bond. QM9 has no precedent for floating isolated atoms in any
+    # real molecule, so for any atom still unbonded here, connect it to
+    # whichever other atom (with valence to spare) it has the highest
+    # probability of ANY real bond with -- not just pairs where that
+    # was the pair's own argmax. Confirmed necessary empirically: this
+    # was the dominant failure mode behind Phase 6's first generation
+    # run only producing single connected molecules 36% of the time.
+    for i in range(n):
+        if bond_matrix[i].sum() == 0 and remaining_valence[i] > 0:
+            best_j, best_order, best_prob = None, 0, -1.0
+            for j in range(n):
+                if j == i or remaining_valence[j] <= 0:
+                    continue
+                max_order = min(remaining_valence[i], remaining_valence[j])
+                for order in range(1, max_order + 1):
+                    prob = bond_probs[i, j, order]
+                    if prob > best_prob:
+                        best_j, best_order, best_prob = j, order, prob
+            if best_j is not None:
+                bond_matrix[i, best_j] = best_order
+                bond_matrix[best_j, i] = best_order
+                remaining_valence[i] -= best_order
+                remaining_valence[best_j] -= best_order
+
     return bond_matrix
 
 
