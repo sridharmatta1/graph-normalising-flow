@@ -287,7 +287,7 @@ def main(argv):
     flow_sess, sample_n_node_ph, generated_embeddings_t = build_flow_graph()
     decoder_sess, embeddings_ph, atom_pred_t, bond_probs_t = build_decoder_graph()
 
-    results = []  # list of (canonical_smiles or None)
+    results = []  # list of (canonical_smiles or None, is_connected or None)
     num_generated = 0
     while num_generated < FLAGS.num_molecules_to_generate:
         batch_size = min(FLAGS.sample_batch_size,
@@ -315,33 +315,65 @@ def main(argv):
             try:
                 mol = graph_to_mol(mol_atom_pred, bond_matrix)
                 smiles = Chem.MolToSmiles(mol)
+                is_connected = len(Chem.GetMolFrags(mol)) == 1
             except Exception:
                 smiles = None
-            results.append(smiles)
+                is_connected = None
+            results.append((smiles, is_connected))
 
         num_generated += batch_size
         print("Generated {}/{} molecules".format(
             num_generated, FLAGS.num_molecules_to_generate))
 
-    valid = [s for s in results if s is not None]
-    unique = set(valid)
-    novel = [s for s in unique if s not in train_smiles]
+    valid = [s for s, c in results if s is not None]
+    connected = [s for s, c in results if s is not None and c]
+    # RDKit sanitization (validity) only checks each fragment's own
+    # valence -- it says nothing about whether the result is a SINGLE
+    # connected molecule. QM9's real molecules never have floating
+    # isolated atoms, so "valid" alone overstates how many outputs are
+    # genuinely well-formed single molecules; "connected" is the
+    # stricter, more honest number.
+    valid_unique = set(valid)
+    valid_novel = [s for s in valid_unique if s not in train_smiles]
+    connected_unique = set(connected)
+    connected_novel = [s for s in connected_unique if s not in train_smiles]
 
     n = len(results)
     validity = len(valid) / n
-    uniqueness = (len(unique) / len(valid)) if valid else 0.0
-    novelty = (len(novel) / len(unique)) if unique else 0.0
+    connectivity = (len(connected) / len(valid)) if valid else 0.0
+    strict_validity = len(connected) / n
+    valid_uniqueness = (len(valid_unique) / len(valid)) if valid else 0.0
+    valid_novelty = ((len(valid_novel) / len(valid_unique))
+                     if valid_unique else 0.0)
+    connected_uniqueness = ((len(connected_unique) / len(connected))
+                           if connected else 0.0)
+    connected_novelty = ((len(connected_novel) / len(connected_unique))
+                        if connected_unique else 0.0)
 
     print("\n" + "=" * 60)
     print("Generated {} molecules".format(n))
-    print("Validity:  {}/{} ({:.1f}%)".format(len(valid), n, 100 * validity))
-    print("Uniqueness (of valid): {}/{} ({:.1f}%)".format(
-        len(unique), len(valid), 100 * uniqueness))
-    print("Novelty (of unique, vs. training set): {}/{} ({:.1f}%)".format(
-        len(novel), len(unique), 100 * novelty))
+    print("Validity (RDKit-sanitizable, fragments allowed): "
+         "{}/{} ({:.1f}%)".format(len(valid), n, 100 * validity))
+    print("  Uniqueness (of valid): {}/{} ({:.1f}%)".format(
+        len(valid_unique), len(valid), 100 * valid_uniqueness))
+    print("  Novelty (of unique valid, vs. training set): "
+         "{}/{} ({:.1f}%)".format(len(valid_novel), len(valid_unique),
+                                  100 * valid_novelty))
+    print("-" * 60)
+    print("Connectivity (of valid, single connected component): "
+         "{}/{} ({:.1f}%)".format(len(connected), len(valid),
+                                  100 * connectivity))
+    print("Strict validity (valid AND connected -- a real single "
+         "molecule): {}/{} ({:.1f}%)".format(len(connected), n,
+                                             100 * strict_validity))
+    print("  Uniqueness (of strictly valid): {}/{} ({:.1f}%)".format(
+        len(connected_unique), len(connected), 100 * connected_uniqueness))
+    print("  Novelty (of unique strictly-valid, vs. training set): "
+         "{}/{} ({:.1f}%)".format(len(connected_novel), len(connected_unique),
+                                  100 * connected_novelty))
     print("=" * 60)
-    print("\nSample of generated molecules:")
-    for s in list(unique)[:20]:
+    print("\nSample of strictly-valid generated molecules:")
+    for s in list(connected_unique)[:20]:
         print(" ", s)
 
 
