@@ -85,15 +85,18 @@ flags.DEFINE_integer('attn_num_heads', 2, '')
 flags.DEFINE_integer('attn_concat_heads_output_dim', 64, '')
 flags.DEFINE_bool('weight_sharing', False, '')
 flags.DEFINE_float(
-    'max_log_scale', 2.0,
+    'max_log_scale', 0.25,
     'Bounds the affine coupling scale s via max_log_scale*tanh(s/'
     'max_log_scale) before exp(s), so exp(s) is capped regardless of '
-    'what the s network outputs. The plain grevnet.py GNFBlock this '
-    'was originally built on (no clamping, real BatchNorm) diverged to '
-    'NaN within ~1300 iterations when trained on molecular embeddings '
-    '-- log_det_jacobian grew without bound every logged step, the '
-    'same signature this project already fixed for NConditionedGNFBlock '
-    'via this exact clamping (see molecular_flow.py).')
+    'what the s network outputs. NConditionedGNFBlock\'s original fix '
+    'used 2.0, but this project\'s ActNorm is zero-initialized (a true '
+    'no-op at init, not data-dependently normalized like the original '
+    'Glow paper), so with no real renormalization between the 12 '
+    'stacked coupling layers, even 2.0\'s bound left enough room for '
+    'runaway compounding: output norm hit 6.8 million by iteration 0. '
+    '0.25 confirmed stable over 2000 iterations (loss decreasing '
+    'smoothly, output norm holding ~7-8, matching the real embeddings\' '
+    'own scale) -- don\'t raise this without re-testing carefully.')
 
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/flow', '')

@@ -21,6 +21,21 @@ community/ego's own encoder's embedding distribution; molecular
 embeddings evidently have different enough scale characteristics that
 the same instability applies to the unconditioned flow too.
 
+NConditionedGNFBlock's original max_log_scale=2.0 wasn't tight enough
+here, though: this project's ActNorm is zero-initialized (a true no-op
+at init, not data-dependently normalized from the first batch's real
+statistics like the original Glow paper's ActNorm) -- with no actual
+renormalization happening between the 12 stacked coupling layers, even
+a 2.0 bound left enough room for the unclamped translation term t
+(only s is clamped) to compound into a runaway feedback loop: output
+norm hit 6.8 million by iteration 0, before any training. Tightening to
+max_log_scale=0.25 confirmed stable over 2000 iterations (loss
+decreasing smoothly, output norm holding ~7-8, matching the real
+embeddings' own scale ~7.28). A proper fix would give ActNorm
+data-dependent initialization instead, but that means changing gnn.py's
+shared ActNorm class -- the tighter clamp is the safer fix that doesn't
+touch code the working community/ego pipeline also depends on.
+
 Lives here instead of modifying grevnet.py's GNFBlock, which is shared
 with the working, unmodified community/ego baseline. This is
 NConditionedGNFBlock's exact fix, with the N-embedding/FiLM-conditioning
@@ -50,7 +65,7 @@ class MolecularGNFBlock(snt.AbstractModule):
                 num_timesteps,
                 node_embedding_dim,
                 weight_sharing=False,
-                max_log_scale=2.0,
+                max_log_scale=0.25,
                 name="MolecularGNFBlock"):
         super(MolecularGNFBlock, self).__init__(name=name)
         self.num_timesteps = num_timesteps

@@ -13,13 +13,17 @@
 # from the frozen Phase 2 v5 encoder -- 100% valid, 90% exact
 # match on held-out reconstruction).
 #
-# Only run this after a short interactive smoke test confirms
-# train_molecular_flow.py actually runs against a real TF graph
-# (it hasn't yet -- untested against real TF/graph_nets on the
-# dev machine this was written on, same as every other script in
-# this project). e.g.:
-#   python3 molecular_generation/train_molecular_flow.py \
-#     --num_train_iters 2000 --logdir molecular_generation/test_runs/flow_smoke_test
+# First two smoke-test attempts (plain GNFBlock, then
+# max_log_scale=2.0) both diverged to NaN -- this project's
+# zero-initialized ActNorm never actually renormalizes at init,
+# so even a 2.0 clamp left room for the unclamped translation
+# term to compound into a runaway feedback loop across the 12
+# stacked coupling layers (output norm hit 6.8 million by
+# iteration 0). max_log_scale=0.25 (train_molecular_flow.py's
+# default, used below) confirmed stable over a 2000-iteration
+# smoke test: loss decreasing smoothly, output norm holding
+# ~7-8, matching the real embeddings' own scale. See
+# molecular_flow.py's docstring for the full diagnosis.
 # ============================================================
 PYTHON=/home/matta/miniconda3/envs/gnf_molecular/bin/python
 WORKDIR=/home/matta/graph-normalising-flow
@@ -40,6 +44,7 @@ srun $PYTHON -u molecular_generation/train_molecular_flow.py \
     --logdir molecular_generation/test_runs/flow_full \
     --node_embedding_dim 64 \
     --num_coupling_layers 12 \
+    --max_log_scale 0.25 \
     --num_train_iters 100000 \
     --train_batch_size 32 \
     --log_every_n_steps 100 \
