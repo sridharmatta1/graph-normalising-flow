@@ -85,39 +85,62 @@ def decode_bonds_valence_aware(atom_types, bond_probs):
             remaining_valence[i] -= order
             remaining_valence[j] -= order
 
-    # Rescue pass: a pair only becomes a candidate above if THAT PAIR's
-    # own argmax is a real bond type -- an atom whose argmax is "no
-    # bond" against every other atom never enters the candidate list at
-    # all, and is guaranteed to end up isolated, even if it had
-    # non-trivial (just not argmax-winning) probability on some real
-    # bond. QM9 has no precedent for floating isolated atoms in any
-    # real molecule, so for any atom still unbonded here, connect it to
-    # whichever other atom (with valence to spare) it has the highest
-    # probability of ANY real bond with -- not just pairs where that
-    # was the pair's own argmax. Confirmed necessary empirically: this
-    # was the dominant failure mode behind Phase 6's first generation
-    # run only producing single connected molecules 36% of the time.
+    # Connectivity pass: a pair only becomes a candidate above if THAT
+    # PAIR's own argmax is a real bond type, so the greedy pass alone
+    # can leave the molecule split into multiple disconnected pieces --
+    # either a single isolated atom (argmax "no bond" against every
+    # other atom), or two whole multi-atom clusters that are each
+    # internally bonded but never linked to each other. QM9 has no
+    # precedent for a real molecule made of disconnected pieces, so
+    # repeatedly connect the two closest components (highest bond
+    # probability between any atom pair straddling them, not restricted
+    # to each pair's own argmax) until everything is one component, or
+    # no atom anywhere has valence left to spare. An isolated atom is
+    # just a component of size 1, so this single mechanism covers both
+    # cases the two earlier, narrower rescue passes handled separately.
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
     for i in range(n):
-        if bond_matrix[i].sum() == 0 and remaining_valence[i] > 0:
-            best_j, best_order, best_prob = None, 0, -1.0
-            for j in range(n):
-                if j == i or remaining_valence[j] <= 0:
+        for j in range(i + 1, n):
+            if bond_matrix[i, j] != 0:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+    max_bond_order = bond_probs.shape[-1] - 1
+    while len(set(find(i) for i in range(n))) > 1:
+        best = None  # (prob, i, j, order)
+        for i in range(n):
+            if remaining_valence[i] <= 0:
+                continue
+            ri = find(i)
+            for j in range(i + 1, n):
+                if remaining_valence[j] <= 0 or find(j) == ri:
                     continue
-                # Cap at the highest actual bond class (bond_probs.shape[-1]-1,
-                # e.g. 3 for triple bond) -- valence alone can exceed that
+                # Cap at the highest actual bond class (max_bond_order,
+                # e.g. 3 for triple) -- valence alone can exceed that
                 # (e.g. two carbons each with a full valence-4 budget),
                 # but there's no "quadruple bond" class to index into.
                 max_order = min(remaining_valence[i], remaining_valence[j],
-                                bond_probs.shape[-1] - 1)
+                                max_bond_order)
                 for order in range(1, max_order + 1):
                     prob = bond_probs[i, j, order]
-                    if prob > best_prob:
-                        best_j, best_order, best_prob = j, order, prob
-            if best_j is not None:
-                bond_matrix[i, best_j] = best_order
-                bond_matrix[best_j, i] = best_order
-                remaining_valence[i] -= best_order
-                remaining_valence[best_j] -= best_order
+                    if best is None or prob > best[0]:
+                        best = (prob, i, j, order)
+        if best is None:
+            break  # no valid inter-component bond anywhere -- valence exhausted.
+        _, i, j, order = best
+        bond_matrix[i, j] = order
+        bond_matrix[j, i] = order
+        remaining_valence[i] -= order
+        remaining_valence[j] -= order
+        parent[find(i)] = find(j)
 
     return bond_matrix
 
