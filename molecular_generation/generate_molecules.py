@@ -46,6 +46,7 @@ from __future__ import division
 from __future__ import print_function
 
 from functools import partial
+import json
 import os
 import pickle
 import random
@@ -87,6 +88,13 @@ flags.DEFINE_integer('sample_batch_size', 32,
                      'the O(N^2) pairwise bond-decoder call from '
                      'growing too large in one shot.')
 flags.DEFINE_integer('random_seed', 12345, '')
+flags.DEFINE_string(
+    'save_results_json', '',
+    'If non-empty, write every generated molecule (SMILES, connected, '
+    'novel) plus the summary metrics to this JSON path -- for '
+    'visualize_molecules.py to render afterwards, without needing to '
+    're-run generation (which requires both checkpoints) just to look '
+    'at the structures.')
 
 # Shared between both checkpoints -- the flow's input/output IS Phase
 # 2's encoder-output embedding space, so these must match exactly.
@@ -375,6 +383,35 @@ def main(argv):
     print("\nSample of strictly-valid generated molecules:")
     for s in list(connected_unique)[:20]:
         print(" ", s)
+
+    if FLAGS.save_results_json:
+        molecules = []
+        for smiles, is_connected in results:
+            molecules.append({
+                'smiles': smiles,
+                'connected': bool(is_connected) if is_connected is not None else False,
+                'novel': (smiles in connected_novel) if
+                         (smiles is not None and is_connected) else False,
+            })
+        payload = {
+            'summary': {
+                'num_generated': n,
+                'validity': validity,
+                'connectivity': connectivity,
+                'strict_validity': strict_validity,
+                'valid_uniqueness': valid_uniqueness,
+                'valid_novelty': valid_novelty,
+                'connected_uniqueness': connected_uniqueness,
+                'connected_novelty': connected_novelty,
+            },
+            'molecules': molecules,
+        }
+        os.makedirs(os.path.dirname(FLAGS.save_results_json) or '.',
+                   exist_ok=True)
+        with open(FLAGS.save_results_json, 'w') as f:
+            json.dump(payload, f, indent=2)
+        print("\nSaved {} generated molecules + summary metrics to {}".format(
+            n, FLAGS.save_results_json))
 
 
 if __name__ == '__main__':
