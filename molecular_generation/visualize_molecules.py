@@ -81,18 +81,38 @@ def main(argv):
         tag = "novel" if m['novel'] else "seen in training set"
         legends.append("{}. {} ({})".format(i + 1, m['smiles'], tag))
 
-    img = Draw.MolsToGridImage(
-        mols,
-        molsPerRow=FLAGS.mols_per_row,
-        subImgSize=(FLAGS.sub_img_size, FLAGS.sub_img_size),
-        legends=legends,
-        useSVG=False)
-
     os.makedirs(os.path.dirname(FLAGS.output_image) or '.', exist_ok=True)
-    # MolsToGridImage returns a PIL Image when useSVG=False.
-    img.save(FLAGS.output_image)
-    print("Saved grid image of {} molecules to {}".format(
-        len(mols), FLAGS.output_image))
+    try:
+        # PNG path goes through RDKit's _drawerToImage -> PIL's Image
+        # module internally. gnf_molecular's conda-forge rdkit install
+        # is known to leave behind an ABI-mismatched Pillow (the same
+        # libtiff.so.5 conflict documented in train_molecular_
+        # autoencoder.py's env-setup notes) -- catching the ImportError
+        # here means this script still produces a usable figure without
+        # needing anyone to remember a workaround flag.
+        img = Draw.MolsToGridImage(
+            mols,
+            molsPerRow=FLAGS.mols_per_row,
+            subImgSize=(FLAGS.sub_img_size, FLAGS.sub_img_size),
+            legends=legends,
+            useSVG=False)
+        img.save(FLAGS.output_image)
+        print("Saved grid image of {} molecules to {}".format(
+            len(mols), FLAGS.output_image))
+    except ImportError as e:
+        print("PNG rendering unavailable ({}); falling back to RDKit's "
+             "native SVG renderer, which never touches PIL/libtiff.".format(e))
+        svg_path = os.path.splitext(FLAGS.output_image)[0] + '.svg'
+        svg = Draw.MolsToGridImage(
+            mols,
+            molsPerRow=FLAGS.mols_per_row,
+            subImgSize=(FLAGS.sub_img_size, FLAGS.sub_img_size),
+            legends=legends,
+            useSVG=True)
+        with open(svg_path, 'w') as f:
+            f.write(svg)
+        print("Saved SVG grid image of {} molecules to {}".format(
+            len(mols), svg_path))
 
 
 if __name__ == '__main__':
