@@ -57,6 +57,7 @@ import sonnet as snt
 import tensorflow as tf
 
 from gnn import get_gnns, make_act_norm
+from n_conditioning import NEmbedding, make_film_conditioned_gnn_fn
 
 
 class MolecularGNFBlock(snt.AbstractModule):
@@ -145,6 +146,137 @@ class MolecularGNFBlock(snt.AbstractModule):
             else:
                 s = self.s[0][i](z0).nodes
                 t = self.t[0][i](z0).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
+            z0 = z0.replace(nodes=self.bns[0][i].forward(z0.nodes))
+            z1 = z1.replace(nodes=(z1.nodes - t) * tf.exp(-s))
+        return z.replace(nodes=tf.concat([z0.nodes, z1.nodes], axis=1))
+
+    def _build(self, input, inverse=True):
+        func = self.f if inverse else self.g
+        return func(input)
+
+
+class NConditionedMolecularGNFBlock(snt.AbstractModule):
+    """N-conditioned counterpart to MolecularGNFBlock -- Phase 4 for
+    molecules. Reuses n_conditioning.py's exact FiLM mechanism unchanged
+    (NEmbedding + make_film_conditioned_gnn_fn) -- the same one
+    grevnet.py's NConditionedGNFBlock already proved out end-to-end for
+    community/ego -- rather than inventing a new FiLM-conditioned
+    variant of the attention-based dm_self_attn_gnn/
+    bond_aware_self_attn_gnn s/t networks MolecularGNFBlock uses.
+    Deliberate choice: this project can't run a real TF graph before a
+    change reaches the cluster, so a hand-rolled FiLM+attention hybrid
+    is meaningfully riskier as a first attempt than reusing a mechanism
+    already validated end-to-end elsewhere in this codebase. If
+    FiLMConditionedGNN's simpler mean-aggregation s/t networks turn out
+    to underperform MolecularGNFBlock's attention-based ones, upgrading
+    to an attention+FiLM hybrid is a reasonable follow-up, not a
+    prerequisite for a first working version.
+
+    Structurally identical to NConditionedGNFBlock (same ActNorm, same
+    FiLM wiring, same ordering of f()/g()'s coupling sub-steps) with
+    one deliberate difference: max_log_scale defaults to 0.25, not
+    NConditionedGNFBlock's 2.0. 2.0 was already proven too loose for
+    this project's zero-initialized ActNorm (see this file's module
+    docstring and MolecularGNFBlock -- output norm hit 6.8 million by
+    iteration 0 under 2.0 on this project's own molecular embeddings).
+    N-conditioning doesn't change that failure mode, so start from the
+    value already confirmed stable rather than re-discovering it.
+    """
+
+    def __init__(self,
+                num_timesteps,
+                node_embedding_dim,
+                hidden_dim,
+                n_embed_dim=32,
+                weight_sharing=False,
+                max_log_scale=0.25,
+                name="NConditionedMolecularGNFBlock"):
+        super(NConditionedMolecularGNFBlock, self).__init__(name=name)
+        self.num_timesteps = num_timesteps
+        self.weight_sharing = weight_sharing
+        self.max_log_scale = max_log_scale
+        with self._enter_variable_scope():
+            self.n_embedding = NEmbedding(n_embed_dim)
+            make_s_fn = make_film_conditioned_gnn_fn(hidden_dim,
+                                                     node_embedding_dim)
+            make_t_fn = make_film_conditioned_gnn_fn(hidden_dim,
+                                                     node_embedding_dim)
+            if weight_sharing:
+                self.s = [make_s_fn(), make_s_fn()]
+                self.t = [make_t_fn(), make_t_fn()]
+            else:
+                self.s = [
+                    get_gnns(num_timesteps, make_s_fn),
+                    get_gnns(num_timesteps, make_s_fn)
+                ]
+                self.t = [
+                    get_gnns(num_timesteps, make_t_fn),
+                    get_gnns(num_timesteps, make_t_fn)
+                ]
+            self.bns = [
+                [make_act_norm(node_embedding_dim) for _ in range(num_timesteps)],
+                [make_act_norm(node_embedding_dim) for _ in range(num_timesteps)],
+            ]
+
+    def f(self, x):
+        log_det_jacobian = 0
+        n_embedding = self.n_embedding(x)
+        x0, x1 = tf.split(x.nodes, num_or_size_splits=2, axis=1)
+        x0 = x.replace(nodes=x0)
+        x1 = x.replace(nodes=x1)
+        for i in range(self.num_timesteps):
+            an = self.bns[0][i]
+            log_det_jacobian += an.inverse_log_det_jacobian(x0.nodes)
+            x0 = x0.replace(nodes=an.inverse(x0.nodes))
+            if self.weight_sharing:
+                s = self.s[0](x0, n_embedding).nodes
+                t = self.t[0](x0, n_embedding).nodes
+            else:
+                s = self.s[0][i](x0, n_embedding).nodes
+                t = self.t[0][i](x0, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
+            log_det_jacobian += tf.reduce_sum(s)
+            x1 = x1.replace(nodes=x1.nodes * tf.exp(s) + t)
+
+            an = self.bns[1][i]
+            log_det_jacobian += an.inverse_log_det_jacobian(x1.nodes)
+            x1 = x1.replace(nodes=an.inverse(x1.nodes))
+            if self.weight_sharing:
+                s = self.s[1](x1, n_embedding).nodes
+                t = self.t[1](x1, n_embedding).nodes
+            else:
+                s = self.s[1][i](x1, n_embedding).nodes
+                t = self.t[1][i](x1, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
+            log_det_jacobian += tf.reduce_sum(s)
+            x0 = x0.replace(nodes=x0.nodes * tf.exp(s) + t)
+
+        x = x.replace(nodes=tf.concat([x0.nodes, x1.nodes], axis=1))
+        return x, log_det_jacobian
+
+    def g(self, z):
+        n_embedding = self.n_embedding(z)
+        z0, z1 = tf.split(z.nodes, num_or_size_splits=2, axis=1)
+        z0 = z.replace(nodes=z0)
+        z1 = z.replace(nodes=z1)
+        for i in reversed(range(self.num_timesteps)):
+            if self.weight_sharing:
+                s = self.s[1](z1, n_embedding).nodes
+                t = self.t[1](z1, n_embedding).nodes
+            else:
+                s = self.s[1][i](z1, n_embedding).nodes
+                t = self.t[1][i](z1, n_embedding).nodes
+            s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
+            z1 = z1.replace(nodes=self.bns[1][i].forward(z1.nodes))
+            z0 = z0.replace(nodes=(z0.nodes - t) * tf.exp(-s))
+
+            if self.weight_sharing:
+                s = self.s[0](z0, n_embedding).nodes
+                t = self.t[0](z0, n_embedding).nodes
+            else:
+                s = self.s[0][i](z0, n_embedding).nodes
+                t = self.t[0][i](z0, n_embedding).nodes
             s = self.max_log_scale * tf.tanh(s / self.max_log_scale)
             z0 = z0.replace(nodes=self.bns[0][i].forward(z0.nodes))
             z1 = z1.replace(nodes=(z1.nodes - t) * tf.exp(-s))
