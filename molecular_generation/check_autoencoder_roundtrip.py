@@ -59,6 +59,14 @@ flags.DEFINE_string('checkpoint', '', 'Trained autoencoder checkpoint '
                     'checkpoints-2000.')
 flags.DEFINE_string('data_dir', 'molecular_generation/data', '')
 flags.DEFINE_integer('num_molecules_to_check', 20, '')
+flags.DEFINE_enum(
+    'eval_split', 'val', ['val', 'test'],
+    'Which held-out split to check against. \'val\' (the original '
+    'default) has been used throughout Phase 2 development to compare '
+    'architecture variants -- \'test\' has deliberately never been '
+    'touched until now, for one final check that Phase 2\'s reported '
+    'accuracy was not, even inadvertently, tuned against the data used '
+    'to evaluate it.')
 
 # Must match the values used at training time exactly (Saver restores by
 # variable name, but the graph must have the right shapes to build them).
@@ -88,11 +96,12 @@ FLAGS = flags.FLAGS
 def main(argv):
     del argv
 
-    with open(os.path.join(FLAGS.data_dir, 'qm9_val.p'), 'rb') as f:
+    data_path = os.path.join(FLAGS.data_dir, 'qm9_{}.p'.format(FLAGS.eval_split))
+    with open(data_path, 'rb') as f:
         val_examples = pickle.load(f)
     val_examples = val_examples[:FLAGS.num_molecules_to_check]
-    print("Checking {} held-out val molecules against {}".format(
-        len(val_examples), FLAGS.checkpoint))
+    print("Checking {} held-out {} molecules against {}".format(
+        len(val_examples), FLAGS.eval_split, FLAGS.checkpoint))
 
     graphs = [build_nx_graph(e) for e in val_examples]
 
