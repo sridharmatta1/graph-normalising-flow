@@ -88,6 +88,18 @@ flags.DEFINE_integer('sample_batch_size', 32,
                      'the O(N^2) pairwise bond-decoder call from '
                      'growing too large in one shot.')
 flags.DEFINE_integer('random_seed', 12345, '')
+flags.DEFINE_integer(
+    'target_n', 0,
+    'If > 0, force every generated molecule to have exactly this many '
+    'heavy atoms, instead of drawing N from the training distribution. '
+    'Added to run a controlled comparison against '
+    'generate_molecules_n_conditioned.py\'s --target_n at the same N -- '
+    'this unconditioned flow was never blocked from taking a specific '
+    'N (sample_n_node_placeholder was always a free parameter), so this '
+    'flag doesn\'t unlock new capability, it just makes forcing N as '
+    'convenient here as it is on the N-conditioned script, for a fair '
+    'side-by-side test of whether conditioning improves quality at an '
+    'under-represented N.')
 flags.DEFINE_float(
     'sample_temperature', 1.0,
     'Scales the flow prior N(0, I) to N(0, t^2 I) before running g() -- '
@@ -306,6 +318,9 @@ def main(argv):
         for e in train_examples)
     print("Loaded {} training molecules (for N-sampling and novelty "
          "check)".format(len(train_examples)))
+    if FLAGS.target_n > 0:
+        print("--target_n={} set: every generated molecule will have "
+             "exactly {} heavy atoms.".format(FLAGS.target_n, FLAGS.target_n))
 
     flow_sess, sample_n_node_ph, generated_embeddings_t = build_flow_graph()
     decoder_sess, embeddings_ph, atom_pred_t, bond_probs_t = build_decoder_graph()
@@ -315,7 +330,10 @@ def main(argv):
     while num_generated < FLAGS.num_molecules_to_generate:
         batch_size = min(FLAGS.sample_batch_size,
                          FLAGS.num_molecules_to_generate - num_generated)
-        batch_n_node = [random.choice(train_n_node) for _ in range(batch_size)]
+        if FLAGS.target_n > 0:
+            batch_n_node = [FLAGS.target_n] * batch_size
+        else:
+            batch_n_node = [random.choice(train_n_node) for _ in range(batch_size)]
 
         embeddings = flow_sess.run(
             generated_embeddings_t,
@@ -411,6 +429,7 @@ def main(argv):
         payload = {
             'summary': {
                 'num_generated': n,
+                'target_n': FLAGS.target_n,
                 'sample_temperature': FLAGS.sample_temperature,
                 'validity': validity,
                 'connectivity': connectivity,
