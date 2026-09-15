@@ -88,6 +88,21 @@ flags.DEFINE_integer('sample_batch_size', 32,
                      'the O(N^2) pairwise bond-decoder call from '
                      'growing too large in one shot.')
 flags.DEFINE_integer('random_seed', 12345, '')
+flags.DEFINE_float(
+    'sample_temperature', 1.0,
+    'Scales the flow prior N(0, I) to N(0, t^2 I) before running g() -- '
+    'matches MoFlow\'s reduced-temperature generation (they report '
+    't=0.85 for both QM9 and ZINC250K, section 5.1/Table 2 of '
+    'arXiv:2006.10137). Our flow was trained against a plain N(0, I) '
+    'log-likelihood objective (no learned per-dim scale the way '
+    'MoFlow\'s sigma is), so t=1.0 exactly reproduces the un-scaled '
+    'sampling every earlier generation run used. t<1.0 samples closer '
+    'to the mode the s/t networks saw most often during training --  '
+    'the hypothesis worth testing is whether the n=10,000 run\'s '
+    'uniqueness shortfall (93.3% vs MoFlow\'s 99.2%) comes from '
+    'over-spread sampling landing outside the region the decoder '
+    'reconstructs distinctly, the same way MoFlow trades some prior '
+    'coverage for higher validity/uniqueness at generation time.')
 flags.DEFINE_string(
     'save_results_json', '',
     'If non-empty, write every generated molecule (SMILES, connected, '
@@ -188,7 +203,7 @@ def build_flow_graph():
         mvn = tfd.MultivariateNormalDiag(
             tf.zeros(FLAGS.node_embedding_dim),
             tf.ones(FLAGS.node_embedding_dim))
-        sample_nodes = mvn.sample(
+        sample_nodes = FLAGS.sample_temperature * mvn.sample(
             sample_shape=(tf.reduce_sum(sample_n_node_placeholder),))
         s_edges, s_globals, s_receivers, s_senders, s_n_edge = transform_example(
             sample_n_node_placeholder)
@@ -396,6 +411,7 @@ def main(argv):
         payload = {
             'summary': {
                 'num_generated': n,
+                'sample_temperature': FLAGS.sample_temperature,
                 'validity': validity,
                 'connectivity': connectivity,
                 'strict_validity': strict_validity,
