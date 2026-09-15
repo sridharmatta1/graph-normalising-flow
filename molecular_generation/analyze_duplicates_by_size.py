@@ -40,6 +40,15 @@ flags.DEFINE_string(
     'molecular_generation/results/generated_molecules_10k.json', '')
 flags.DEFINE_string('train_data_path',
                     'molecular_generation/data/qm9_train.p', '')
+flags.DEFINE_string(
+    'save_summary_json', '',
+    'If non-empty, also write the per-N breakdown table to this path as '
+    'JSON (one object per N: generated/unique/uniq_pct/train_distinct/'
+    'train_total) -- for turning into an actual chart locally, since '
+    'matplotlib/PIL inside the gnf_molecular conda env has the same '
+    'libtiff ABI conflict documented elsewhere in this project '
+    '(visualize_molecules.py\'s SVG fallback), so plotting is safer done '
+    'on a machine with a known-working matplotlib instead of here.')
 FLAGS = flags.FLAGS
 
 
@@ -71,15 +80,34 @@ def main(argv):
         "N", "generated", "unique", "uniq_pct", "share_of_total",
         "train_distinct", "train_total"))
     print("-" * 90)
+    summary_rows = []
     for n in sorted(generated_by_size):
         smiles_list = generated_by_size[n]
         unique_count = len(set(smiles_list))
+        uniq_pct = 100.0 * unique_count / len(smiles_list)
+        share_pct = 100.0 * len(smiles_list) / total_generated
         print("{:>3} | {:>10} {:>8} {:>9.1f}% | {:>13.1f}% | {:>14} {:>12}".format(
-            n, len(smiles_list), unique_count,
-            100.0 * unique_count / len(smiles_list),
-            100.0 * len(smiles_list) / total_generated,
+            n, len(smiles_list), unique_count, uniq_pct, share_pct,
             len(train_smiles_by_size.get(n, [])),
             train_count_by_size.get(n, 0)))
+        summary_rows.append({
+            'n': n,
+            'generated': len(smiles_list),
+            'unique': unique_count,
+            'uniq_pct': uniq_pct,
+            'share_of_total_pct': share_pct,
+            'train_distinct': len(train_smiles_by_size.get(n, [])),
+            'train_total': train_count_by_size.get(n, 0),
+        })
+
+    if FLAGS.save_summary_json:
+        with open(FLAGS.save_summary_json, 'w') as f:
+            json.dump({
+                'results_json': FLAGS.results_json,
+                'total_generated': total_generated,
+                'by_n': summary_rows,
+            }, f, indent=2)
+        print("\nSaved per-N summary to {}".format(FLAGS.save_summary_json))
 
 
 if __name__ == '__main__':
