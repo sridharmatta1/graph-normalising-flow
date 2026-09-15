@@ -113,6 +113,16 @@ flags.DEFINE_integer('flow_hidden_dim', 256, '')
 flags.DEFINE_integer('flow_n_embed_dim', 32, '')
 flags.DEFINE_bool('flow_weight_sharing', False, '')
 flags.DEFINE_float('flow_max_log_scale', 0.25, '')
+flags.DEFINE_float(
+    'sigma_scale', 1.0,
+    'Multiplies the trained ConditionalPriorNetwork\'s sigma(N) at '
+    'generation time only (no retraining) -- a cheap test of whether '
+    'the --target_n=5 uniqueness regression (25.5%, worse than the '
+    'unconditioned flow\'s already-poor 32.9%) is caused by an '
+    'overconfident, too-narrow sigma(N) learned for rare N (see '
+    'inspect_conditional_prior.py). 1.0 = unscaled, exactly what '
+    'training produced. >1.0 widens sampling around the learned mu(N) '
+    'without changing mu(N) itself or requiring any retraining.')
 
 FLAGS = flags.FLAGS
 
@@ -183,6 +193,7 @@ def build_flow_graph():
 
         sample_n_embedding = prior_n_embedding_mod(sample_graph_phs)
         mu, sigma = prior_net(sample_n_embedding)
+        sigma = sigma * FLAGS.sigma_scale
         sampled_nodes = sample_conditional_prior(sample_n_node_placeholder,
                                                  mu, sigma)
         sample_graph_phs = sample_graph_phs.replace(nodes=sampled_nodes)
