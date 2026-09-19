@@ -511,11 +511,20 @@ for iteration in range(0, FLAGS.num_train_iters + 1):
             graph = nx.from_numpy_array(graph)
             single_sample_log_prob = np.mean(
                 sample_log_prob_vals[start_ind:end_ind])
-            visualize_graph(graph,
-                            filename=os.path.join(
-                                graphs_dir,
-                                "graph_{}_prob_{:.2f}_nnode_{}.png".format(
-                                    i, single_sample_log_prob, num_nodes)))
+            try:
+                visualize_graph(graph,
+                                filename=os.path.join(
+                                    graphs_dir,
+                                    "graph_{}_prob_{:.2f}_nnode_{}.png".format(
+                                        i, single_sample_log_prob, num_nodes)))
+            except Exception as e:
+                # Purely diagnostic PNG output -- must never crash the
+                # actual training run over it. Print once per failure
+                # rather than silently swallowing it, so a real, ongoing
+                # environment problem is still visible in the logs.
+                logger.info("WARNING: visualize_graph failed ({}); "
+                           "continuing without saving this diagnostic "
+                           "image".format(e))
             graphs.append(graph)
             start_ind = end_ind
         pickle.dump(

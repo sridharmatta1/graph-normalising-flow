@@ -2,11 +2,18 @@ import math
 
 import numpy as np
 import networkx as nx
-import matplotlib.pyplot as plt
 import tensorflow as tf
 
 
 def visualize_graph(G, filename=None):
+    # Imported here, not at module level, so that scripts which only need
+    # this module's other (non-plotting) functions -- reset_sess,
+    # senders_receivers, etc. -- don't fail to import at all if
+    # matplotlib/Pillow is broken in the active environment (a libtiff.so.5
+    # ABI mismatch has hit this project before, in a different conda env --
+    # see molecular_generation/visualize_molecules.py's own SVG fallback
+    # for the same underlying issue).
+    import matplotlib.pyplot as plt
     pos = nx.spring_layout(G, k=0.5, iterations=200, scale=100)
     plt.figure(figsize=(30, 10))
     nx.draw(G,
@@ -34,6 +41,7 @@ def reset_sess(config=None):
 
 
 def plot_data(data, outfile):
+    import matplotlib.pyplot as plt
     x = data[:, 0]
     y = data[:, 1]
     plt.scatter(x, y, c='blue')
@@ -51,6 +59,7 @@ def plot_data(data, outfile):
 
 
 def plot_num_incorrect_edges_per_graph(n_nodes, n_incorrect, outfile=None):
+    import matplotlib.pyplot as plt
     plt.scatter(n_nodes, n_incorrect, c='blue')
     if outfile:
         plt.savefig(outfile)

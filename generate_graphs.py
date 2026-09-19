@@ -42,12 +42,24 @@ flags.DEFINE_string('output_dir', '', '')
 flags.DEFINE_integer('node_embedding_dim', 100, '')
 flags.DEFINE_string('wandb_project', 'graph-normalising-flow', 'W&B project name.')
 flags.DEFINE_string('wandb_run_name', '', 'W&B run name (optional).')
+flags.DEFINE_string(
+    'target_n_nodes', '',
+    'Comma-separated node counts to generate at, e.g. "10,15,20". '
+    'Generation cycles through these instead of the training set\'s own '
+    'N distribution, letting you request specific graph sizes directly -- '
+    'the real test of whether the N-conditioned prior/FiLM actually '
+    'respond to N. Leave empty to keep the default behavior (cycle '
+    'through train_n_nodes()).')
 
 BATCH_SIZE = 32
 FLAGS = tf.app.flags.FLAGS
 
 dataset = GraphDataset(FLAGS.dataset, FLAGS.node_embedding_dim)
-n_nodes_distro = dataset.train_n_nodes()
+if FLAGS.target_n_nodes:
+    n_nodes_distro = [int(n) for n in FLAGS.target_n_nodes.split(',')]
+    print("Using user-specified target N values: {}".format(n_nodes_distro))
+else:
+    n_nodes_distro = dataset.train_n_nodes()
 sess = reset_sess()
 latest_checkpoint = tf.train.latest_checkpoint(FLAGS.ckpt_dir)
 saver = tf.train.import_meta_graph("{}.meta".format(latest_checkpoint))
@@ -91,7 +103,15 @@ while len(graphs) < FLAGS.number_to_generate:
         graphs.append(graph)
         start_ind = end_ind
         print("ind is {} log prob is {}".format(i, log_prob_graph))
-        visualize_graph(graph, os.path.join(FLAGS.output_dir, "graph_{}.png".format(graph_ind)))
+        try:
+            visualize_graph(graph, os.path.join(FLAGS.output_dir, "graph_{}.png".format(graph_ind)))
+        except Exception as e:
+            # Purely diagnostic PNG output -- must never block graphs.p
+            # (the actual deliverable, pickled after this loop) from being
+            # saved. Print once per failure rather than silently swallowing
+            # it, so a real, ongoing environment problem is still visible.
+            print("WARNING: visualize_graph failed ({}); continuing without "
+                 "saving graph_{}.png".format(e, graph_ind))
         graph_ind += 1
     iteration += 1
     n_nodes_ind += 1
