@@ -32,17 +32,30 @@ NUM_ATOM_TYPES = len(ATOM_VOCAB)
 NUM_BOND_TYPES = 4
 
 
-def build_nx_graph(example):
+def build_nx_graph(example, property_name=None):
     """One Phase-1 example dict -> a directed networkx graph matching
     graph_data.py's convert_nx_repr conventions (self-loops included,
     graph-level 'features' key present) so networkxs_to_graphs_tuple /
     placeholders_from_networkxs work unmodified.
+
+    The graph-level 'features' value becomes each graph's .globals entry
+    after networkxs_to_graphs_tuple -- normally always 0 (nothing reads
+    it), but every training/generation script that builds a GraphsTuple
+    from scratch already sets globals to zeros too, so this field has
+    been dead weight throughout the whole pipeline. property_name
+    repurposes it to carry a real per-molecule property (e.g. 'mu', the
+    dipole moment) instead, for property-conditioning -- see
+    property_conditioning.py. None (the default) preserves the original
+    always-0 behavior exactly, so every existing caller (Phase 2
+    training, N-only conditioning) is unaffected.
     """
     atom_types = example['atom_types']
     bond_matrix = example['bond_matrix']
     n = len(atom_types)
 
-    g = nx.DiGraph(features=0)
+    graph_features = (0 if property_name is None else
+                      float(example['properties'][property_name]))
+    g = nx.DiGraph(features=graph_features)
     for i in range(n):
         one_hot = np.zeros(NUM_ATOM_TYPES, dtype=np.float32)
         one_hot[atom_types[i]] = 1.0
@@ -68,7 +81,7 @@ class QM9GraphDataset():
     later evaluation once the full pipeline (Phases 2-6) is done.
     """
 
-    def __init__(self, data_dir, max_molecules=0):
+    def __init__(self, data_dir, max_molecules=0, property_name=None):
         with open(os.path.join(data_dir, 'qm9_train.p'), 'rb') as f:
             train_examples = pickle.load(f)
         with open(os.path.join(data_dir, 'qm9_val.p'), 'rb') as f:
@@ -78,8 +91,12 @@ class QM9GraphDataset():
             train_examples = train_examples[:max_molecules]
             val_examples = val_examples[:max(1, max_molecules // 10)]
 
-        self.train_graphs = [build_nx_graph(e) for e in train_examples]
-        self.test_graphs = [build_nx_graph(e) for e in val_examples]
+        self.train_graphs = [
+            build_nx_graph(e, property_name) for e in train_examples
+        ]
+        self.test_graphs = [
+            build_nx_graph(e, property_name) for e in val_examples
+        ]
         self.train_index = 0
         self.test_index = 0
 

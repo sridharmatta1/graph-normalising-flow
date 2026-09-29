@@ -57,12 +57,22 @@ flags.DEFINE_integer(
     'training set (one pass, rounded up to a multiple of '
     'train_batch_size).')
 flags.DEFINE_integer('run_number', 0, '')
+flags.DEFINE_string(
+    'property_name', '',
+    'If non-empty (e.g. "mu" for dipole moment), also extract this '
+    'QM9 property per molecule and save it alongside the embeddings '
+    'and n_node -- for property-conditioning (see '
+    'property_conditioning.py). Written to a 3-tuple pickle instead of '
+    'the usual 2-tuple; MolecularFlowDataset only reads indices 0/1, so '
+    'existing N-only training is unaffected either way. Empty (default) '
+    'preserves the original 2-tuple output exactly.')
 FLAGS = flags.FLAGS
 
 
 def main(argv):
     del argv
-    dataset = QM9GraphDataset(FLAGS.data_dir)
+    property_name = FLAGS.property_name or None
+    dataset = QM9GraphDataset(FLAGS.data_dir, property_name=property_name)
     num_examples_target = FLAGS.num_examples or len(dataset.train_graphs)
     print("Extracting embeddings for {} molecules ({} available) from {}"
          .format(num_examples_target, len(dataset.train_graphs),
@@ -86,19 +96,28 @@ def main(argv):
     total_n_node = 0
     node_embeddings = np.empty([0, FLAGS.node_embedding_dim])
     n_node = np.empty([0], dtype=np.int32)
+    property_values = np.empty([0], dtype=np.float32)
+
+    def dump_chunk(path):
+        if property_name is not None:
+            with open(path, 'wb') as f:
+                pickle.dump((node_embeddings, n_node, property_values), f)
+        else:
+            with open(path, 'wb') as f:
+                pickle.dump((node_embeddings, n_node), f)
 
     num_examples = 0
     batch_num = 0
     while num_examples < num_examples_target:
         if total_n_node * FLAGS.node_embedding_dim * 4 > 100e6:
-            with open(filename, 'wb') as f:
-                pickle.dump((node_embeddings, n_node), f)
+            dump_chunk(filename)
             print("Wrote {} molecules to {}".format(len(n_node), filename))
             file_number += 1
             filename = filename_template.format(file_number)
             total_n_node = 0
             node_embeddings = np.empty([0, FLAGS.node_embedding_dim])
             n_node = np.empty([0], dtype=np.int32)
+            property_values = np.empty([0], dtype=np.float32)
 
         graphs_tuple = dataset.get_next_train_batch(FLAGS.train_batch_size)
         feed_dict = {
@@ -116,6 +135,11 @@ def main(argv):
         n_node = np.append(n_node, graphs_tuple.n_node, axis=0)
         node_embeddings = np.append(node_embeddings,
                                     values['gnn_output_nodes'], axis=0)
+        if property_name is not None:
+            property_values = np.append(
+                property_values,
+                np.reshape(graphs_tuple.globals, [-1]).astype(np.float32),
+                axis=0)
         total_n_node += np.sum(graphs_tuple.n_node)
         num_examples += FLAGS.train_batch_size
 
@@ -127,8 +151,7 @@ def main(argv):
         batch_num += 1
 
     if len(n_node) > 0:
-        with open(filename, 'wb') as f:
-            pickle.dump((node_embeddings, n_node), f)
+        dump_chunk(filename)
         print("Wrote {} molecules to {}".format(len(n_node), filename))
 
     print("Done. Extracted embeddings for {} molecules total.".format(

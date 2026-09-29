@@ -191,13 +191,27 @@ class NConditionedMolecularGNFBlock(snt.AbstractModule):
                 n_embed_dim=32,
                 weight_sharing=False,
                 max_log_scale=0.25,
+                embedding_module=None,
                 name="NConditionedMolecularGNFBlock"):
+        """embedding_module: optional pre-built snt.AbstractModule that
+        takes a graph and returns a [num_graphs, embed_dim] embedding,
+        fed into every coupling layer's FiLM generator -- defaults to
+        None, which creates a plain NEmbedding(n_embed_dim) exactly as
+        this class always has (N-only conditioning, unchanged
+        behavior). Pass an NPropertyEmbedding (property_conditioning.py)
+        instead to condition jointly on N and a chemical property --
+        everything downstream (FiLM generators) is agnostic to what
+        produced the embedding, so this is the only change needed to
+        reuse this same class for joint conditioning rather than
+        writing a third, near-duplicate coupling-layer block.
+        """
         super(NConditionedMolecularGNFBlock, self).__init__(name=name)
         self.num_timesteps = num_timesteps
         self.weight_sharing = weight_sharing
         self.max_log_scale = max_log_scale
         with self._enter_variable_scope():
-            self.n_embedding = NEmbedding(n_embed_dim)
+            self.n_embedding = (embedding_module if embedding_module is not None
+                               else NEmbedding(n_embed_dim))
             make_s_fn = make_film_conditioned_gnn_fn(hidden_dim,
                                                      node_embedding_dim)
             make_t_fn = make_film_conditioned_gnn_fn(hidden_dim,
