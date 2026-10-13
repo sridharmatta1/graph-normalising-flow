@@ -57,6 +57,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from conditional_prior import ConditionalPriorNetwork, conditional_prior_log_prob
 from n_conditioning import NEmbedding
 
+from flow_validation import EarlyStopper, ValidationSet
 from molecular_flow import NConditionedMolecularGNFBlock
 from tf_helpers import reset_sess, senders_receivers
 
@@ -161,6 +162,27 @@ flags.DEFINE_integer('summary_every_n_steps', 25, '')
 flags.DEFINE_integer('save_every_n_steps', 2000, '')
 flags.DEFINE_integer('max_checkpoints_to_keep', 5, '')
 flags.DEFINE_integer('random_seed', 12345, '')
+
+# Validation / early stopping -- all off by default, which reproduces the
+# original fixed-length training run exactly.
+flags.DEFINE_string(
+    'val_data_dir', '',
+    'Directory with embeddings_*.p files of the VAL split, from '
+    'generate_molecular_embeddings.py --split val. Empty = no validation.')
+flags.DEFINE_integer('eval_every_n_steps', 2000,
+                     'How often to compute the validation loss.')
+flags.DEFINE_integer(
+    'val_max_batches', 0,
+    'Cap on validation batches per evaluation (0 = the whole val set).')
+flags.DEFINE_integer(
+    'early_stopping_patience', 0,
+    'Stop after this many consecutive evaluations without the validation '
+    'per-node loss improving by more than early_stopping_min_delta. '
+    '0 = never stop early (num_train_iters is then the only limit). '
+    'num_train_iters always remains the hard cap.')
+flags.DEFINE_float(
+    'early_stopping_min_delta', 0.0,
+    'Minimum improvement in validation per-node loss that counts.')
 
 # Optimizer params -- same defaults as train_molecular_flow.py.
 flags.DEFINE_string('lr_type', 'fixed_decay', '')
@@ -317,6 +339,26 @@ def main(argv):
                                              FLAGS.train_batch_size,
                                              FLAGS.train_epochs)
 
+    val_set, stopper, best_saver = None, None, None
+    best_path = os.path.join(FLAGS.logdir, 'best', 'best')
+    if FLAGS.val_data_dir:
+        val_set = ValidationSet(FLAGS.val_data_dir, FLAGS.train_batch_size,
+                                FLAGS.val_max_batches)
+        stopper = EarlyStopper(FLAGS.early_stopping_patience,
+                               FLAGS.early_stopping_min_delta)
+        best_saver = tf.train.Saver(max_to_keep=1)
+        os.makedirs(os.path.dirname(best_path), exist_ok=True)
+        val_tensors = {
+            "total_loss": total_loss,
+            "log_prob_zs": log_prob_zs,
+            "log_det_jacobian": log_det_jacobian,
+        }
+        logger.info("Validation on {} molecules every {} steps; early "
+                    "stopping patience={} min_delta={}".format(
+                        val_set.num_molecules, FLAGS.eval_every_n_steps,
+                        FLAGS.early_stopping_patience,
+                        FLAGS.early_stopping_min_delta))
+
     for iteration in range(FLAGS.num_train_iters + 1):
         node_embeddings, n_node = dataset_generator.train_batch()
         feed_dict = {
@@ -357,6 +399,41 @@ def main(argv):
             saver.save(sess, os.path.join(FLAGS.logdir, 'checkpoints'),
                       global_step=global_step)
 
+        if (val_set is not None and iteration > 0 and
+                iteration % FLAGS.eval_every_n_steps == 0):
+            val = val_set.evaluate(sess, node_embeddings_placeholder,
+                                   n_node_placeholder, val_tensors)
+            val_loss = val["total_loss"]
+            is_new_best, should_stop = stopper.update(val_loss, iteration)
+            if is_new_best:
+                best_saver.save(sess, best_path)
+            logger.info(
+                "VALIDATION iteration {} per_node_loss={:.4f} "
+                "log_prob_zs/node={:.4f} log_det_jacobian/node={:.4f} | "
+                "best={:.4f} at {} | evals without improvement: {}/{}".format(
+                    iteration, val_loss, val["log_prob_zs"],
+                    val["log_det_jacobian"], stopper.best, stopper.best_step,
+                    stopper.evals_since_improvement,
+                    FLAGS.early_stopping_patience))
+            if WANDB_AVAILABLE:
+                wandb.log({
+                    "val/per_node_loss": float(val_loss),
+                    "val/log_prob_zs_per_node": float(val["log_prob_zs"]),
+                    "val/log_det_per_node": float(val["log_det_jacobian"]),
+                    "val/best_per_node_loss": float(stopper.best),
+                }, step=iteration)
+            if should_stop:
+                logger.info(
+                    "Early stopping at iteration {}: no validation "
+                    "improvement > {} for {} evaluations.".format(
+                        iteration, FLAGS.early_stopping_min_delta,
+                        FLAGS.early_stopping_patience))
+                break
+
+    if stopper is not None:
+        logger.info("Best validation per_node_loss {:.4f} at iteration {}; "
+                    "checkpoint: {}".format(stopper.best, stopper.best_step,
+                                            best_path))
     logger.info("Training complete.")
 
 

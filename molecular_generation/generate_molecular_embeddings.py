@@ -28,6 +28,7 @@ import warnings
 
 from absl import app
 from absl import flags
+import graph_nets as gn
 import numpy as np
 import tensorflow as tf
 
@@ -66,6 +67,14 @@ flags.DEFINE_string(
     'the usual 2-tuple; MolecularFlowDataset only reads indices 0/1, so '
     'existing N-only training is unaffected either way. Empty (default) '
     'preserves the original 2-tuple output exactly.')
+flags.DEFINE_enum(
+    'split', 'train', ['train', 'val'],
+    'Which Phase 1 split to encode. "train" (default) is the original '
+    'behavior. "val" encodes qm9_val.p in file order, no shuffling and no '
+    'wrap-around, dropping the final partial batch -- the held-out set '
+    'the flow trainers use for validation loss / early stopping. Write it '
+    'to a different --output_file/directory than the training '
+    'embeddings. The test split is never encoded.')
 FLAGS = flags.FLAGS
 
 
@@ -73,9 +82,17 @@ def main(argv):
     del argv
     property_name = FLAGS.property_name or None
     dataset = QM9GraphDataset(FLAGS.data_dir, property_name=property_name)
-    num_examples_target = FLAGS.num_examples or len(dataset.train_graphs)
-    print("Extracting embeddings for {} molecules ({} available) from {}"
-         .format(num_examples_target, len(dataset.train_graphs),
+    use_val = FLAGS.split == 'val'
+    source_graphs = dataset.test_graphs if use_val else dataset.train_graphs
+    if use_val:
+        default_target = (len(source_graphs) // FLAGS.train_batch_size *
+                          FLAGS.train_batch_size)
+    else:
+        default_target = len(source_graphs)
+    num_examples_target = FLAGS.num_examples or default_target
+    val_index = 0
+    print("Extracting {} embeddings for {} molecules ({} available) from {}"
+         .format(FLAGS.split, num_examples_target, len(source_graphs),
                  FLAGS.checkpoint))
 
     sess = reset_sess()
@@ -119,7 +136,13 @@ def main(argv):
             n_node = np.empty([0], dtype=np.int32)
             property_values = np.empty([0], dtype=np.float32)
 
-        graphs_tuple = dataset.get_next_train_batch(FLAGS.train_batch_size)
+        if use_val:
+            batch_graphs = source_graphs[val_index:val_index +
+                                         FLAGS.train_batch_size]
+            val_index += FLAGS.train_batch_size
+            graphs_tuple = gn.utils_np.networkxs_to_graphs_tuple(batch_graphs)
+        else:
+            graphs_tuple = dataset.get_next_train_batch(FLAGS.train_batch_size)
         feed_dict = {
             "raw_graph_phs/nodes:0": graphs_tuple.nodes,
             "raw_graph_phs/edges:0": graphs_tuple.edges,
