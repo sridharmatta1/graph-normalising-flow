@@ -90,3 +90,84 @@ class LatentCalibrationStats(object):
             'pooled_over_sigma_mean': pooled_std / sigma_mean,
             'pooled_over_sigma_rms': pooled_std / sigma_rms,
         }
+
+
+def _rbf_mmd2_unbiased(x, y, bandwidth):
+    def sqdist(a, b):
+        return np.maximum(
+            (a ** 2).sum(1)[:, None] + (b ** 2).sum(1)[None, :] - 2.0 * a @ b.T,
+            0.0)
+    gamma = 1.0 / (2.0 * bandwidth ** 2)
+    kxx = np.exp(-gamma * sqdist(x, x))
+    kyy = np.exp(-gamma * sqdist(y, y))
+    kxy = np.exp(-gamma * sqdist(x, y))
+    n, m = len(x), len(y)
+    return float((kxx.sum() - np.trace(kxx)) / (n * (n - 1)) +
+                 (kyy.sum() - np.trace(kyy)) / (m * (m - 1)) -
+                 2.0 * kxy.mean())
+
+
+def compare_embeddings(real_mols, gen_mols, rng, max_mmd_atoms=1500):
+    """Compares real encoder embeddings with embeddings sampled from a flow.
+
+    real_mols, gen_mols: [num_molecules, N, D] (one molecule size N).
+    Reports, between the two sets of per-atom D-vectors:
+      std_ratio_*       per-dimension std(gen)/std(real); 1.0 = same spread.
+      mean_shift_*      |mean(gen)-mean(real)| / std(real) per dimension.
+      corr_*            64x64 correlation matrices: mean |off-diagonal|
+                        for each, and ||C_gen - C_real||_F relative to
+                        ||C_real - I||_F (how much of the real correlation
+                        structure is mismatched).
+      molmean_std_ratio per-dimension std of the per-molecule mean
+                        embedding, gen/real (between-molecule variation).
+      mmd2 / mmd2_null  unbiased RBF-MMD^2 real-vs-gen, against the same
+                        statistic between two halves of the real data
+                        (the noise floor: mmd2 near mmd2_null = no
+                        detectable difference).
+    """
+    d = real_mols.shape[-1]
+    real = real_mols.reshape(-1, d).astype(np.float64)
+    gen = gen_mols.reshape(-1, d).astype(np.float64)
+
+    std_r, std_g = real.std(axis=0), gen.std(axis=0)
+    ratio = std_g / std_r
+    shift = np.abs(gen.mean(axis=0) - real.mean(axis=0)) / std_r
+
+    def corr(a):
+        return np.nan_to_num(np.corrcoef(a.T))
+    c_r, c_g = corr(real), corr(gen)
+    off = ~np.eye(d, dtype=bool)
+    denom = np.linalg.norm(c_r - np.eye(d))
+
+    mm_r = real_mols.astype(np.float64).mean(axis=1).std(axis=0)
+    mm_g = gen_mols.astype(np.float64).mean(axis=1).std(axis=0)
+
+    def subsample(a, k):
+        return a[rng.choice(len(a), size=min(k, len(a)), replace=False)]
+    xr = subsample(real, max_mmd_atoms)
+    xg = subsample(gen, max_mmd_atoms)
+    half = len(xr) // 2
+    pair = np.sqrt(np.maximum(
+        (xr ** 2).sum(1)[:, None] + (xr ** 2).sum(1)[None, :] -
+        2.0 * xr @ xr.T, 0.0))
+    bandwidth = float(np.median(pair[pair > 0]))
+
+    return {
+        'std_ratio_mean': float(ratio.mean()),
+        'std_ratio_p10': float(np.percentile(ratio, 10)),
+        'std_ratio_p90': float(np.percentile(ratio, 90)),
+        'std_ratio_min': float(ratio.min()),
+        'std_ratio_max': float(ratio.max()),
+        'mean_shift_mean': float(shift.mean()),
+        'mean_shift_max': float(shift.max()),
+        'corr_offdiag_real': float(np.abs(c_r[off]).mean()),
+        'corr_offdiag_gen': float(np.abs(c_g[off]).mean()),
+        'corr_mismatch_rel': float(np.linalg.norm(c_g - c_r) /
+                                   max(denom, 1e-12)),
+        'molmean_std_ratio': float((mm_g / mm_r).mean()),
+        'mmd2': _rbf_mmd2_unbiased(xr, xg, bandwidth),
+        'mmd2_null': _rbf_mmd2_unbiased(xr[:half], xr[half:2 * half],
+                                        bandwidth),
+        'n_real_atoms': int(len(real)),
+        'n_gen_atoms': int(len(gen)),
+    }
