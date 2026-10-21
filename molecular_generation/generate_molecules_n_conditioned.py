@@ -59,6 +59,7 @@ from gnn import TimestepGNN, make_mlp_model
 
 from bond_aware_attention import bond_aware_self_attn_gnn
 from molecular_flow import NConditionedMolecularGNFBlock
+from null_conditioning import NullEmbedding
 from molecular_gnn import (atom_type_logits, embed_atom_features,
                           refine_bond_logits)
 from qm9_chem import decode_bonds_valence_aware, graph_to_mol
@@ -113,6 +114,10 @@ flags.DEFINE_integer('flow_hidden_dim', 256, '')
 flags.DEFINE_integer('flow_n_embed_dim', 32, '')
 flags.DEFINE_bool('flow_weight_sharing', False, '')
 flags.DEFINE_float('flow_max_log_scale', 0.25, '')
+flags.DEFINE_bool(
+    'ablate_condition', False,
+    'Must match the --ablate_condition the flow was trained with: builds '
+    'the constant NullEmbedding instead of NEmbedding.')
 flags.DEFINE_float(
     'sigma_scale', 1.0,
     'Multiplies the trained ConditionalPriorNetwork\'s sigma(N) at '
@@ -165,8 +170,12 @@ def build_flow_graph():
             hidden_dim=FLAGS.flow_hidden_dim,
             n_embed_dim=FLAGS.flow_n_embed_dim,
             weight_sharing=FLAGS.flow_weight_sharing,
-            max_log_scale=FLAGS.flow_max_log_scale)
-        prior_n_embedding_mod = NEmbedding(FLAGS.flow_n_embed_dim)
+            max_log_scale=FLAGS.flow_max_log_scale,
+            embedding_module=(NullEmbedding(FLAGS.flow_n_embed_dim)
+                              if FLAGS.ablate_condition else None))
+        prior_n_embedding_mod = (NullEmbedding(FLAGS.flow_n_embed_dim)
+                                 if FLAGS.ablate_condition
+                                 else NEmbedding(FLAGS.flow_n_embed_dim))
         prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
 
         # Dummy f() call: never run, only needed so every one of the

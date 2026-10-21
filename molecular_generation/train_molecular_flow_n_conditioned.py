@@ -59,6 +59,7 @@ from n_conditioning import NEmbedding
 
 from flow_validation import EarlyStopper, ValidationSet
 from molecular_flow import NConditionedMolecularGNFBlock
+from null_conditioning import NullEmbedding
 from tf_helpers import reset_sess, senders_receivers
 
 warnings.filterwarnings("ignore")
@@ -147,6 +148,14 @@ flags.DEFINE_float(
     'NConditionedGNFBlock\'s original 2.0. Don\'t raise without '
     're-testing carefully (a short smoke-test run first, same as '
     'train_molecular_flow.py\'s own history).')
+
+flags.DEFINE_bool(
+    'ablate_condition', False,
+    'Ablation: replace the N-embedding (in the coupling layers AND the '
+    'prior) with a constant, so the flow keeps the FiLM architecture and '
+    'learned diagonal prior but cannot see N. Isolates the effect of '
+    'conditioning from the effect of the FiLM coupling networks. Must be '
+    'passed to the generator too.')
 
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/flow_n_conditioned', '')
@@ -247,9 +256,13 @@ def main(argv):
         hidden_dim=FLAGS.hidden_dim,
         n_embed_dim=FLAGS.n_embed_dim,
         weight_sharing=FLAGS.weight_sharing,
-        max_log_scale=FLAGS.max_log_scale)
+        max_log_scale=FLAGS.max_log_scale,
+        embedding_module=(NullEmbedding(FLAGS.n_embed_dim)
+                          if FLAGS.ablate_condition else None))
 
-    prior_n_embedding_mod = NEmbedding(FLAGS.n_embed_dim)
+    prior_n_embedding_mod = (NullEmbedding(FLAGS.n_embed_dim)
+                             if FLAGS.ablate_condition
+                             else NEmbedding(FLAGS.n_embed_dim))
     prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
 
     grevnet_reverse_output, log_det_jacobian = grevnet(graphs_tuple,
