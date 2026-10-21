@@ -171,3 +171,69 @@ def compare_embeddings(real_mols, gen_mols, rng, max_mmd_atoms=1500):
         'n_real_atoms': int(len(real)),
         'n_gen_atoms': int(len(gen)),
     }
+
+
+class WithinMoleculeStats(object):
+    """Are the atoms of one molecule independent in the latent space, as the
+    prior assumes (every atom is an i.i.d. draw from N(mu, sigma^2))?
+
+    With u = (z - mu) / sigma and N atoms per molecule, i.i.d. atoms give
+    Var(mean of u over a molecule's atoms) = Var(u) / N. The design effect
+
+        DE_d = N * Var_molecules(mean-over-atoms of u_d) / Var_atoms(u_d)
+
+    is 1 for independent atoms and 1 + (N-1) * rho when atoms of the same
+    molecule share a correlation rho. DE > 1 means the real latents have
+    more between-molecule variation than an independent prior can
+    reproduce, so sampled molecules would be too similar to each other.
+
+    design_effect_prior is the same thing measured against the prior's own
+    sigma (no centering or empirical-variance normalisation): the factor by
+    which real molecule-means are wider than the prior implies, which is
+    what generation actually depends on. Molecules must all have the same
+    N (one instance per N).
+    """
+
+    def __init__(self, dim):
+        self.dim = dim
+        self.n_atoms_per_molecule = None
+        self.num_molecules = 0
+        self.s_u = np.zeros(dim)
+        self.s_uu = np.zeros(dim)
+        self.s_m = np.zeros(dim)
+        self.s_mm = np.zeros(dim)
+
+    def update(self, z_mols, mu, sigma):
+        """z_mols: [molecules, N, dim]; mu, sigma: [dim]."""
+        z_mols = np.asarray(z_mols, dtype=np.float64)
+        n = z_mols.shape[1]
+        if self.n_atoms_per_molecule not in (None, n):
+            raise ValueError("All molecules must have the same N.")
+        self.n_atoms_per_molecule = n
+        u = (z_mols - np.asarray(mu, np.float64)) / np.asarray(sigma,
+                                                               np.float64)
+        mol_mean = u.mean(axis=1)
+        self.num_molecules += u.shape[0]
+        self.s_u += u.sum(axis=(0, 1))
+        self.s_uu += (u ** 2).sum(axis=(0, 1))
+        self.s_m += mol_mean.sum(axis=0)
+        self.s_mm += (mol_mean ** 2).sum(axis=0)
+
+    def summary(self):
+        n, m = self.n_atoms_per_molecule, float(self.num_molecules)
+        atoms = m * n
+        var_atom = self.s_uu / atoms - (self.s_u / atoms) ** 2
+        var_mol = self.s_mm / m - (self.s_m / m) ** 2
+        de = n * var_mol / var_atom
+        de_prior = n * (self.s_mm / m)
+        icc = (de - 1.0) / (n - 1.0)
+        return {
+            'n_atoms_per_molecule': int(n),
+            'design_effect': float(de.mean()),
+            'design_effect_p10': float(np.percentile(de, 10)),
+            'design_effect_p90': float(np.percentile(de, 90)),
+            'design_effect_prior': float(de_prior.mean()),
+            'design_effect_prior_p10': float(np.percentile(de_prior, 10)),
+            'design_effect_prior_p90': float(np.percentile(de_prior, 90)),
+            'icc': float(icc.mean()),
+        }

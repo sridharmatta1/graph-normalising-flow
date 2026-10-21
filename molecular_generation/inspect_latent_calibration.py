@@ -36,7 +36,8 @@ from conditional_prior import ConditionalPriorNetwork
 from gnn import dm_self_attn_gnn, make_mlp_model
 from n_conditioning import NEmbedding
 
-from latent_stats import GAUSSIAN_ABS_RATIO, LatentCalibrationStats
+from latent_stats import (GAUSSIAN_ABS_RATIO, LatentCalibrationStats,
+                          WithinMoleculeStats)
 from molecular_flow import MolecularGNFBlock, NConditionedMolecularGNFBlock
 from tf_helpers import reset_sess, senders_receivers
 
@@ -191,6 +192,7 @@ def main(argv):
                 print("{:>3} {:>6}   (no molecules)".format(n, 0))
                 continue
             stats = LatentCalibrationStats(dim)
+            within = WithinMoleculeStats(dim)
             for lo in range(0, len(molecules), FLAGS.chunk_molecules):
                 chunk = molecules[lo:lo + FLAGS.chunk_molecules]
                 feed = {
@@ -205,8 +207,10 @@ def main(argv):
                     z = sess.run(z_t, feed_dict=feed)
                     mu, sigma = np.zeros(dim), np.ones(dim)
                 stats.update(z, mu, sigma)
+                within.update(z.reshape(len(chunk), n, dim), mu, sigma)
             s = stats.summary()
             s['n_molecules'] = len(molecules)
+            s['within_molecule'] = within.summary()
             results[split][n] = s
             print("{:>3} {:>6} | {:>6.3f} {:>6.3f} {:>5d} | {:>6.3f} "
                   "{:>6.2f}-{:<6.2f} {:>6.1f}% {:>6.1f}% | {:>6.2f} {:>7.3f} "
@@ -218,6 +222,26 @@ def main(argv):
                       100 * s['frac_dims_data_narrower'],
                       s['kurtosis_mean'], s['abs_ratio'],
                       s['pooled_over_sigma_mean']))
+
+        print("\nWithin-molecule independence of the latent atoms ({} "
+              "embeddings). DE = 1 means atoms of one molecule are "
+              "independent, as the prior assumes; DE > 1 means they share "
+              "a molecule-level component (ICC = (DE-1)/(N-1)). DE_prior is "
+              "measured against the prior's own sigma.".format(split))
+        print("{:>3} {:>6} | {:>7} {:>13} | {:>7} {:>13} | {:>7}".format(
+            "N", "mols", "DE", "p10-p90", "DE_prior", "p10-p90", "ICC"))
+        print("-" * 78)
+        for n in n_values:
+            if n not in results[split]:
+                continue
+            w = results[split][n]['within_molecule']
+            print("{:>3} {:>6} | {:>7.3f} {:>6.2f}-{:<6.2f} | {:>7.3f} "
+                  "{:>6.2f}-{:<6.2f} | {:>7.4f}".format(
+                      n, results[split][n]['n_molecules'],
+                      w['design_effect'], w['design_effect_p10'],
+                      w['design_effect_p90'], w['design_effect_prior'],
+                      w['design_effect_prior_p10'],
+                      w['design_effect_prior_p90'], w['icc']))
 
     print("\nColumns: sig_mn/sig_gm = arithmetic/geometric mean of the "
           "prior's per-dim sigma; nfloor = dims with sigma < 0.15 "
