@@ -58,7 +58,7 @@ from n_conditioning import NEmbedding
 from gnn import TimestepGNN, make_mlp_model
 
 from bond_aware_attention import bond_aware_self_attn_gnn
-from molecular_flow import NConditionedMolecularGNFBlock
+from coupling_variants import build_n_conditioned_block
 from null_conditioning import NullEmbedding
 from molecular_gnn import (atom_type_logits, embed_atom_features,
                           refine_bond_logits)
@@ -114,6 +114,19 @@ flags.DEFINE_integer('flow_hidden_dim', 256, '')
 flags.DEFINE_integer('flow_n_embed_dim', 32, '')
 flags.DEFINE_bool('flow_weight_sharing', False, '')
 flags.DEFINE_float('flow_max_log_scale', 0.25, '')
+flags.DEFINE_enum(
+    'coupling_arch', 'film',
+    ['film', 'attn_film', 'deep_film', 'interaction_film', 'spline_film'],
+    'Coupling-network architecture (see coupling_variants.py). "film" is '
+    'the original block. Must match between training and generation.')
+flags.DEFINE_bool(
+    'channel_permutation', False,
+    'Fixed random channel permutation between coupling layers (not '
+    'supported with spline_film). Must match at generation.')
+flags.DEFINE_integer('spline_num_bins', 8, 'spline_film only.')
+flags.DEFINE_float('spline_bound', 5.0,
+                   'spline_film only: spline acts on [-bound, bound], '
+                   'identity outside.')
 flags.DEFINE_bool(
     'ablate_condition', False,
     'Must match the --ablate_condition the flow was trained with: builds '
@@ -163,16 +176,19 @@ def build_flow_graph():
                                              n_node=n_node_placeholder,
                                              n_edge=n_edge)
 
-        half_dim = FLAGS.node_embedding_dim // 2
-        grevnet = NConditionedMolecularGNFBlock(
+        grevnet = build_n_conditioned_block(
+            FLAGS.coupling_arch,
             num_timesteps=FLAGS.flow_num_coupling_layers,
-            node_embedding_dim=half_dim,
+            node_embedding_dim=FLAGS.node_embedding_dim,
             hidden_dim=FLAGS.flow_hidden_dim,
             n_embed_dim=FLAGS.flow_n_embed_dim,
             weight_sharing=FLAGS.flow_weight_sharing,
             max_log_scale=FLAGS.flow_max_log_scale,
             embedding_module=(NullEmbedding(FLAGS.flow_n_embed_dim)
-                              if FLAGS.ablate_condition else None))
+                              if FLAGS.ablate_condition else None),
+            channel_permutation=FLAGS.channel_permutation,
+            spline_num_bins=FLAGS.spline_num_bins,
+            spline_bound=FLAGS.spline_bound)
         prior_n_embedding_mod = (NullEmbedding(FLAGS.flow_n_embed_dim)
                                  if FLAGS.ablate_condition
                                  else NEmbedding(FLAGS.flow_n_embed_dim))

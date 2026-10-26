@@ -57,8 +57,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from conditional_prior import ConditionalPriorNetwork, conditional_prior_log_prob
 from n_conditioning import NEmbedding
 
+from coupling_variants import build_n_conditioned_block
 from flow_validation import EarlyStopper, ValidationSet
-from molecular_flow import NConditionedMolecularGNFBlock
 from null_conditioning import NullEmbedding
 from tf_helpers import reset_sess, senders_receivers
 
@@ -157,6 +157,20 @@ flags.DEFINE_bool(
     'conditioning from the effect of the FiLM coupling networks. Must be '
     'passed to the generator too.')
 
+flags.DEFINE_enum(
+    'coupling_arch', 'film',
+    ['film', 'attn_film', 'deep_film', 'interaction_film', 'spline_film'],
+    'Coupling-network architecture (see coupling_variants.py). "film" is '
+    'the original block. Must match between training and generation.')
+flags.DEFINE_bool(
+    'channel_permutation', False,
+    'Fixed random channel permutation between coupling layers (not '
+    'supported with spline_film). Must match at generation.')
+flags.DEFINE_integer('spline_num_bins', 8, 'spline_film only.')
+flags.DEFINE_float('spline_bound', 5.0,
+                   'spline_film only: spline acts on [-bound, bound], '
+                   'identity outside.')
+
 # Training params.
 flags.DEFINE_string('logdir', 'molecular_generation/test_runs/flow_n_conditioned', '')
 flags.DEFINE_integer('train_batch_size', 32, '')
@@ -249,16 +263,19 @@ def main(argv):
                                          n_node=n_node_placeholder,
                                          n_edge=n_edge)
 
-    half_dim = FLAGS.node_embedding_dim // 2
-    grevnet = NConditionedMolecularGNFBlock(
+    grevnet = build_n_conditioned_block(
+        FLAGS.coupling_arch,
         num_timesteps=FLAGS.num_coupling_layers,
-        node_embedding_dim=half_dim,
+        node_embedding_dim=FLAGS.node_embedding_dim,
         hidden_dim=FLAGS.hidden_dim,
         n_embed_dim=FLAGS.n_embed_dim,
         weight_sharing=FLAGS.weight_sharing,
         max_log_scale=FLAGS.max_log_scale,
         embedding_module=(NullEmbedding(FLAGS.n_embed_dim)
-                          if FLAGS.ablate_condition else None))
+                          if FLAGS.ablate_condition else None),
+        channel_permutation=FLAGS.channel_permutation,
+        spline_num_bins=FLAGS.spline_num_bins,
+        spline_bound=FLAGS.spline_bound)
 
     prior_n_embedding_mod = (NullEmbedding(FLAGS.n_embed_dim)
                              if FLAGS.ablate_condition

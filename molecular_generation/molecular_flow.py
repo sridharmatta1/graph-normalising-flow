@@ -53,6 +53,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
+import numpy as np
 import sonnet as snt
 import tensorflow as tf
 
@@ -192,6 +193,8 @@ class NConditionedMolecularGNFBlock(snt.AbstractModule):
                 weight_sharing=False,
                 max_log_scale=0.25,
                 embedding_module=None,
+                make_gnn_fn_factory=None,
+                channel_permutation=False,
                 name="NConditionedMolecularGNFBlock"):
         """embedding_module: optional pre-built snt.AbstractModule that
         takes a graph and returns a [num_graphs, embed_dim] embedding,
@@ -204,18 +207,36 @@ class NConditionedMolecularGNFBlock(snt.AbstractModule):
         produced the embedding, so this is the only change needed to
         reuse this same class for joint conditioning rather than
         writing a third, near-duplicate coupling-layer block.
+
+        make_gnn_fn_factory: optional callable output_dim -> make_gnn_fn
+        that replaces the default FiLM s/t network (see
+        coupling_variants.py); each net must be called as
+        net(graph, n_embedding) and return a graph whose nodes are the
+        [N, output_dim] s (or t). channel_permutation: apply a fixed random
+        permutation of all channels after every coupling timestep (exactly
+        undone in g(), log-det 0). Both default to the original behavior.
         """
         super(NConditionedMolecularGNFBlock, self).__init__(name=name)
         self.num_timesteps = num_timesteps
         self.weight_sharing = weight_sharing
         self.max_log_scale = max_log_scale
+        self._perms = self._inv_perms = None
+        if channel_permutation:
+            width = 2 * node_embedding_dim
+            self._perms = [np.random.RandomState(1000 + i).permutation(width)
+                           for i in range(num_timesteps)]
+            self._inv_perms = [np.argsort(p) for p in self._perms]
         with self._enter_variable_scope():
             self.n_embedding = (embedding_module if embedding_module is not None
                                else NEmbedding(n_embed_dim))
-            make_s_fn = make_film_conditioned_gnn_fn(hidden_dim,
-                                                     node_embedding_dim)
-            make_t_fn = make_film_conditioned_gnn_fn(hidden_dim,
-                                                     node_embedding_dim)
+            if make_gnn_fn_factory is None:
+                make_s_fn = make_film_conditioned_gnn_fn(hidden_dim,
+                                                         node_embedding_dim)
+                make_t_fn = make_film_conditioned_gnn_fn(hidden_dim,
+                                                         node_embedding_dim)
+            else:
+                make_s_fn = make_gnn_fn_factory(node_embedding_dim)
+                make_t_fn = make_gnn_fn_factory(node_embedding_dim)
             if weight_sharing:
                 self.s = [make_s_fn(), make_s_fn()]
                 self.t = [make_t_fn(), make_t_fn()]
@@ -266,6 +287,13 @@ class NConditionedMolecularGNFBlock(snt.AbstractModule):
             log_det_jacobian += tf.reduce_sum(s)
             x0 = x0.replace(nodes=x0.nodes * tf.exp(s) + t)
 
+            if self._perms is not None:
+                mixed = tf.gather(tf.concat([x0.nodes, x1.nodes], axis=1),
+                                  self._perms[i], axis=1)
+                mixed0, mixed1 = tf.split(mixed, num_or_size_splits=2, axis=1)
+                x0 = x0.replace(nodes=mixed0)
+                x1 = x1.replace(nodes=mixed1)
+
         x = x.replace(nodes=tf.concat([x0.nodes, x1.nodes], axis=1))
         return x, log_det_jacobian
 
@@ -275,6 +303,13 @@ class NConditionedMolecularGNFBlock(snt.AbstractModule):
         z0 = z.replace(nodes=z0)
         z1 = z.replace(nodes=z1)
         for i in reversed(range(self.num_timesteps)):
+            if self._inv_perms is not None:
+                unmixed = tf.gather(tf.concat([z0.nodes, z1.nodes], axis=1),
+                                    self._inv_perms[i], axis=1)
+                unmixed0, unmixed1 = tf.split(unmixed, num_or_size_splits=2,
+                                              axis=1)
+                z0 = z0.replace(nodes=unmixed0)
+                z1 = z1.replace(nodes=unmixed1)
             if self.weight_sharing:
                 s = self.s[1](z1, n_embedding).nodes
                 t = self.t[1](z1, n_embedding).nodes
