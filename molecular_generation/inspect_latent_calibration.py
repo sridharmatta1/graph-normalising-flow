@@ -36,6 +36,7 @@ from conditional_prior import ConditionalPriorNetwork
 from gnn import dm_self_attn_gnn, make_mlp_model
 from n_conditioning import NEmbedding
 
+from coupling_variants import build_n_conditioned_block
 from latent_stats import (GAUSSIAN_ABS_RATIO, LatentCalibrationStats,
                           WithinMoleculeStats)
 from molecular_flow import MolecularGNFBlock, NConditionedMolecularGNFBlock
@@ -61,6 +62,15 @@ flags.DEFINE_float('flow_max_log_scale', 0.25, '')
 # N-conditioned flow architecture.
 flags.DEFINE_integer('flow_hidden_dim', 256, '')
 flags.DEFINE_integer('flow_n_embed_dim', 32, '')
+flags.DEFINE_enum(
+    'coupling_arch', 'film',
+    ['film', 'attn_film', 'deep_film', 'interaction_film', 'spline_film'],
+    'N-conditioned flows only: must match the architecture the checkpoint '
+    'was trained with.')
+flags.DEFINE_bool('channel_permutation', False,
+                  'N-conditioned flows only: must match training.')
+flags.DEFINE_integer('spline_num_bins', 8, 'spline_film only.')
+flags.DEFINE_float('spline_bound', 5.0, 'spline_film only.')
 # Unconditioned flow architecture.
 flags.DEFINE_integer('flow_latent_dim', 512, '')
 flags.DEFINE_integer('flow_num_layers', 3, '')
@@ -123,13 +133,28 @@ def build_graph_and_restore():
 
         mu = sigma = None
         if FLAGS.model_kind == 'n_conditioned':
-            grevnet = NConditionedMolecularGNFBlock(
-                num_timesteps=FLAGS.flow_num_coupling_layers,
-                node_embedding_dim=half_dim,
-                hidden_dim=FLAGS.flow_hidden_dim,
-                n_embed_dim=FLAGS.flow_n_embed_dim,
-                weight_sharing=FLAGS.flow_weight_sharing,
-                max_log_scale=FLAGS.flow_max_log_scale)
+            if FLAGS.coupling_arch == 'film' and not FLAGS.channel_permutation:
+                # Original block, built exactly as before so the earlier
+                # checkpoints keep restoring.
+                grevnet = NConditionedMolecularGNFBlock(
+                    num_timesteps=FLAGS.flow_num_coupling_layers,
+                    node_embedding_dim=half_dim,
+                    hidden_dim=FLAGS.flow_hidden_dim,
+                    n_embed_dim=FLAGS.flow_n_embed_dim,
+                    weight_sharing=FLAGS.flow_weight_sharing,
+                    max_log_scale=FLAGS.flow_max_log_scale)
+            else:
+                grevnet = build_n_conditioned_block(
+                    FLAGS.coupling_arch,
+                    num_timesteps=FLAGS.flow_num_coupling_layers,
+                    node_embedding_dim=FLAGS.node_embedding_dim,
+                    hidden_dim=FLAGS.flow_hidden_dim,
+                    n_embed_dim=FLAGS.flow_n_embed_dim,
+                    weight_sharing=FLAGS.flow_weight_sharing,
+                    max_log_scale=FLAGS.flow_max_log_scale,
+                    channel_permutation=FLAGS.channel_permutation,
+                    spline_num_bins=FLAGS.spline_num_bins,
+                    spline_bound=FLAGS.spline_bound)
             prior_embedding = NEmbedding(FLAGS.flow_n_embed_dim)
             prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
             z, _ = grevnet(graphs_tuple, inverse=True)
