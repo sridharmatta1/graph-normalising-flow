@@ -58,7 +58,8 @@ from n_conditioning import NEmbedding
 from gnn import TimestepGNN, make_mlp_model
 
 from bond_aware_attention import bond_aware_self_attn_gnn
-from coupling_variants import build_n_conditioned_block
+from coupling_variants import (attention_kwargs_from_flags,
+                               build_n_conditioned_block)
 from null_conditioning import NullEmbedding
 from molecular_gnn import (atom_type_logits, embed_atom_features,
                           refine_bond_logits)
@@ -188,7 +189,8 @@ def build_flow_graph():
                               if FLAGS.ablate_condition else None),
             channel_permutation=FLAGS.channel_permutation,
             spline_num_bins=FLAGS.spline_num_bins,
-            spline_bound=FLAGS.spline_bound)
+            spline_bound=FLAGS.spline_bound,
+            attn_kwargs=attention_kwargs_from_flags())
         prior_n_embedding_mod = (NullEmbedding(FLAGS.flow_n_embed_dim)
                                  if FLAGS.ablate_condition
                                  else NEmbedding(FLAGS.flow_n_embed_dim))

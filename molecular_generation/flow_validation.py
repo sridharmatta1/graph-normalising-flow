@@ -19,9 +19,11 @@ class ValidationSet(object):
     size, so the final partial batch is dropped).
     """
 
-    def __init__(self, val_data_dir, batch_size, max_batches=0):
+    def __init__(self, val_data_dir, batch_size, max_batches=0, max_files=0):
         files = sorted(f for f in os.listdir(val_data_dir)
                        if f.startswith('embeddings_'))
+        if max_files > 0:
+            files = files[:max_files]
         if not files:
             raise ValueError(
                 "No embeddings_*.p files in {}. Run "
@@ -54,20 +56,21 @@ class ValidationSet(object):
                    self.n_node[lo:hi])
 
     def evaluate(self, sess, node_embeddings_placeholder, n_node_placeholder,
-                 batch_sum_tensors):
+                 batch_sum_tensors, extra_feed=None):
         """batch_sum_tensors: {name: scalar tensor that is a SUM over the
         batch} (total_loss, log_prob_zs, log_det_jacobian). Returns
         {name: that sum divided by the total node count over the whole
         validation set}, i.e. directly comparable to the training
-        per_node_loss.
+        per_node_loss. extra_feed: additional placeholders fed on every
+        batch (e.g. switching training-only noise off).
         """
         sums = {k: 0.0 for k in batch_sum_tensors}
         num_nodes = 0
         for node_embeddings, n_node in self.batches():
-            values = sess.run(batch_sum_tensors, feed_dict={
-                node_embeddings_placeholder: node_embeddings,
-                n_node_placeholder: n_node,
-            })
+            feed = dict(extra_feed or {})
+            feed[node_embeddings_placeholder] = node_embeddings
+            feed[n_node_placeholder] = n_node
+            values = sess.run(batch_sum_tensors, feed_dict=feed)
             for k, v in values.items():
                 sums[k] += float(v)
             num_nodes += int(np.sum(n_node))

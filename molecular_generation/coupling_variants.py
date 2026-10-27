@@ -38,6 +38,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
+from absl import flags
 import graph_nets as gn
 import sonnet as snt
 import tensorflow as tf
@@ -53,6 +54,29 @@ from spline_ops import TFOps, rqs_forward, rqs_inverse
 
 COUPLING_ARCHS = ['film', 'attn_film', 'deep_film', 'interaction_film',
                   'spline_film']
+
+# Size of the attn_film (A) s/t network. Defaults reproduce variant A exactly.
+# Defined here, not in each script, so the trainer, the generator and the
+# diagnostics all take the same flags and cannot drift apart; they must match
+# the values the checkpoint was trained with.
+flags.DEFINE_integer('coupling_attn_kq_dim', 64, 'attn_film only.')
+flags.DEFINE_integer('coupling_attn_v_dim', 64, 'attn_film only.')
+flags.DEFINE_integer('coupling_attn_num_heads', 2, 'attn_film only.')
+flags.DEFINE_integer('coupling_attn_concat_dim', 64,
+                     'attn_film only: concatenated-heads output width.')
+flags.DEFINE_integer('coupling_attn_mlp_width', 512, 'attn_film only.')
+flags.DEFINE_integer('coupling_attn_mlp_layers', 3, 'attn_film only.')
+_FLAGS = flags.FLAGS
+
+
+def attention_kwargs_from_flags():
+    """FiLMAttentionGNN size arguments from the coupling_attn_* flags."""
+    return dict(kq_dim=_FLAGS.coupling_attn_kq_dim,
+                v_dim=_FLAGS.coupling_attn_v_dim,
+                num_heads=_FLAGS.coupling_attn_num_heads,
+                concat_heads_output_dim=_FLAGS.coupling_attn_concat_dim,
+                mlp_width=_FLAGS.coupling_attn_mlp_width,
+                mlp_layers=_FLAGS.coupling_attn_mlp_layers)
 
 
 def _init():
@@ -325,12 +349,13 @@ class NConditionedSplineBlock(snt.AbstractModule):
 
 
 # ---------------------------------------------------------------- factory --
-def _s_t_factory(coupling_arch, hidden_dim, input_dim):
+def _s_t_factory(coupling_arch, hidden_dim, input_dim, attn_kwargs=None):
     """Returns factory(output_dim) -> make_gnn_fn, the shape
     NConditionedMolecularGNFBlock's make_gnn_fn_factory expects."""
     if coupling_arch == 'attn_film':
         def factory(output_dim):
-            return lambda: FiLMAttentionGNN(output_dim, input_dim)
+            return lambda: FiLMAttentionGNN(output_dim, input_dim,
+                                            **(attn_kwargs or {}))
     elif coupling_arch == 'deep_film':
         def factory(output_dim):
             return lambda: FiLMDeepGNN(output_dim)
@@ -352,9 +377,11 @@ def build_n_conditioned_block(coupling_arch,
                               embedding_module=None,
                               channel_permutation=False,
                               spline_num_bins=8,
-                              spline_bound=5.0):
+                              spline_bound=5.0,
+                              attn_kwargs=None):
     """node_embedding_dim is the FULL embedding width (64); the coupling
-    halves are node_embedding_dim // 2."""
+    halves are node_embedding_dim // 2. attn_kwargs sizes the attn_film
+    network (attention_kwargs_from_flags()); None = variant A's defaults."""
     if coupling_arch not in COUPLING_ARCHS:
         raise ValueError("coupling_arch must be one of {}".format(
             COUPLING_ARCHS))
@@ -372,7 +399,8 @@ def build_n_conditioned_block(coupling_arch,
             bound=spline_bound,
             embedding_module=embedding_module)
     factory = (None if coupling_arch == 'film' else
-               _s_t_factory(coupling_arch, hidden_dim, half_dim))
+               _s_t_factory(coupling_arch, hidden_dim, half_dim,
+                            attn_kwargs))
     return NConditionedMolecularGNFBlock(
         num_timesteps=num_timesteps,
         node_embedding_dim=half_dim,

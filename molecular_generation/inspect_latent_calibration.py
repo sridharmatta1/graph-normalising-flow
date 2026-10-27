@@ -36,7 +36,8 @@ from conditional_prior import ConditionalPriorNetwork
 from gnn import dm_self_attn_gnn, make_mlp_model
 from n_conditioning import NEmbedding
 
-from coupling_variants import build_n_conditioned_block
+from coupling_variants import (attention_kwargs_from_flags,
+                               build_n_conditioned_block)
 from latent_stats import (GAUSSIAN_ABS_RATIO, LatentCalibrationStats,
                           WithinMoleculeStats)
 from molecular_flow import MolecularGNFBlock, NConditionedMolecularGNFBlock
@@ -154,7 +155,8 @@ def build_graph_and_restore():
                     max_log_scale=FLAGS.flow_max_log_scale,
                     channel_permutation=FLAGS.channel_permutation,
                     spline_num_bins=FLAGS.spline_num_bins,
-                    spline_bound=FLAGS.spline_bound)
+                    spline_bound=FLAGS.spline_bound,
+                    attn_kwargs=attention_kwargs_from_flags())
             prior_embedding = NEmbedding(FLAGS.flow_n_embed_dim)
             prior_net = ConditionalPriorNetwork(FLAGS.node_embedding_dim)
             z, _ = grevnet(graphs_tuple, inverse=True)
