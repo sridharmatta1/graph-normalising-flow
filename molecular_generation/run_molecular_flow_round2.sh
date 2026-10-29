@@ -15,6 +15,7 @@
 #                 join the existing seed-12345 run for a 5-seed estimate)
 #   CONFIG=L24    24 coupling layers instead of 12
 #   CONFIG=NZ05   embedding noise 0.05 x per-dimension data std (training only)
+#   CONFIG=NZ10   embedding noise 0.10 x per-dimension data std
 #   CONFIG=NZ15   embedding noise 0.15 x per-dimension data std
 #   CONFIG=WIDE   attention 4 heads, kq/v/concat 128, MLP width 1024
 #   CONFIG=PERM   channel permutation between coupling layers
@@ -33,7 +34,7 @@
 # training log (val minus train loss and z-score RMS, noise-free) at every
 # validation step. Writes only to new directories/files.
 # ============================================================
-CONFIG=${CONFIG:?set CONFIG to A L24 NZ05 NZ15 WIDE PERM LONG}
+CONFIG=${CONFIG:?set CONFIG to A L24 NZ05 NZ10 NZ15 WIDE PERM LONG}
 MODE=${MODE:?set MODE to smoke or full}
 SEED=${SEED:-12345}
 
@@ -49,11 +50,12 @@ case $CONFIG in
     L24)  NUM_LAYERS=24 ;;
     NZ05) TRAIN_EXTRA="--embedding_noise 0.05" ;;
     NZ15) TRAIN_EXTRA="--embedding_noise 0.15" ;;
+    NZ10) TRAIN_EXTRA="--embedding_noise 0.10" ;;
     WIDE) ARCH_FLAGS="$ARCH_FLAGS --coupling_attn_kq_dim 128 --coupling_attn_v_dim 128 --coupling_attn_num_heads 4 --coupling_attn_concat_dim 128 --coupling_attn_mlp_width 1024" ;;
     PERM) ARCH_FLAGS="$ARCH_FLAGS --channel_permutation" ;;
     LONG) TRAIN_EXTRA="--lr_type polynomial_decay"
           CAP=300000; EPOCHS=150; PATIENCE=20 ;;
-    *) echo "CONFIG must be one of A L24 NZ05 NZ15 WIDE PERM LONG"; exit 1 ;;
+    *) echo "CONFIG must be one of A L24 NZ05 NZ10 NZ15 WIDE PERM LONG"; exit 1 ;;
 esac
 
 TAG=$CONFIG
