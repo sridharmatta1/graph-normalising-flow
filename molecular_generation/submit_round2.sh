@@ -7,10 +7,10 @@
 #   bash molecular_generation/submit_round2.sh full L24 NZ05       # only some
 #   bash molecular_generation/submit_round2.sh full NZ05:seeds     # NZ05, seeds 1-4
 #
-# Configs: L24 NZ05 NZ10 NZ15 WIDE PERM LONG (see run_molecular_flow_round2.sh).
+# Configs: L24 NZ05 NZ10 NZ15 NZ20 NZ30 WIDE PERM LONG (see run_molecular_flow_round2.sh).
 # Run `smoke` first: it confirms every config builds, trains, validates,
 # restores, generates and diagnoses before you spend hours on it.
-MODE=${1:?usage: submit_round2.sh smoke|full [L24 NZ05 NZ10 NZ15 WIDE PERM LONG seeds <config>:seeds]}
+MODE=${1:?usage: submit_round2.sh smoke|full [L24 NZ05 NZ10 NZ15 NZ20 NZ30 WIDE PERM LONG seeds <config>:seeds]}
 shift
 CONFIGS=${@:-L24 NZ05 NZ15 WIDE PERM LONG}
 
