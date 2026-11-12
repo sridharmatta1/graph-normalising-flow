@@ -25,6 +25,7 @@ import graph_nets as gn
 import networkx as nx
 import numpy as np
 
+from derived_properties import property_value
 from qm9_constants import ATOM_VOCAB
 
 NUM_ATOM_TYPES = len(ATOM_VOCAB)
@@ -54,7 +55,7 @@ def build_nx_graph(example, property_name=None):
     n = len(atom_types)
 
     graph_features = (0 if property_name is None else
-                      float(example['properties'][property_name]))
+                      property_value(example, property_name))
     g = nx.DiGraph(features=graph_features)
     for i in range(n):
         one_hot = np.zeros(NUM_ATOM_TYPES, dtype=np.float32)

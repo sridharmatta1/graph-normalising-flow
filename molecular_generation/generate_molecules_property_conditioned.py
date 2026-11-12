@@ -11,6 +11,13 @@ unaffected by what Phase 5's flow was conditioned on), same
 building the sampling graph's conditioning input from BOTH N and the
 property value, via NPropertyEmbedding instead of plain NEmbedding.
 
+For a property that RDKit computes from the graph (derived_properties.py:
+logp, tpsa) it also scores every strictly valid generated molecule and
+reports how close the achieved value is to the requested one, per target
+(--target_properties takes a comma-separated list). For QM9's stored
+quantum properties (mu, homo, ...) there is nothing to compute from a
+graph, so only the usual validity/uniqueness/novelty is reported.
+
 Untested against a real TF graph before reaching the cluster, same as
 every other script in this project -- expect a first-run fix or two.
 """
@@ -39,7 +46,9 @@ from conditional_prior import ConditionalPriorNetwork, sample_conditional_prior
 from gnn import TimestepGNN, make_mlp_model
 
 from bond_aware_attention import bond_aware_self_attn_gnn
-from molecular_flow import NConditionedMolecularGNFBlock
+from coupling_variants import (attention_kwargs_from_flags,
+                               build_n_conditioned_block)
+from derived_properties import DERIVED_PROPERTIES, mol_property
 from molecular_gnn import (atom_type_logits, embed_atom_features,
                           refine_bond_logits)
 from property_conditioning import NPropertyEmbedding
@@ -72,10 +81,24 @@ flags.DEFINE_float(
     'sensible "sample from training distribution" default the way '
     'there is for target_n, since this script always conditions on '
     'the property (that\'s the point of this script existing).')
+flags.DEFINE_string(
+    'target_properties', '',
+    'Comma-separated target values, e.g. "-1.156,0.299,1.948": generates '
+    '--num_molecules_to_generate molecules for EACH and reports each target '
+    'separately. Overrides --target_property when given.')
+flags.DEFINE_string(
+    'property_name', 'mu',
+    'The conditioning property the flow was trained on. If it is one of '
+    'derived_properties.DERIVED_PROPERTIES (logp, tpsa) the achieved value of '
+    'every strictly valid molecule is computed and compared with the target.')
 flags.DEFINE_float('property_mean', 2.6520,
                    'Must match the value used at training time.')
 flags.DEFINE_float('property_std', 1.4035,
                    'Must match the value used at training time.')
+flags.DEFINE_float(
+    'sigma_scale', 1.0,
+    'Multiplies the trained prior sigma at sampling time, exactly as in '
+    'generate_molecules_n_conditioned.py. 1.0 = as trained.')
 flags.DEFINE_string(
     'save_results_json', '',
     'Same format as generate_molecules_n_conditioned.py, plus a '
@@ -98,6 +121,14 @@ flags.DEFINE_integer('flow_hidden_dim', 256, '')
 flags.DEFINE_integer('flow_n_embed_dim', 32, '')
 flags.DEFINE_bool('flow_weight_sharing', False, '')
 flags.DEFINE_float('flow_max_log_scale', 0.25, '')
+flags.DEFINE_enum(
+    'coupling_arch', 'film',
+    ['film', 'attn_film', 'deep_film', 'interaction_film', 'spline_film'],
+    'Must match the architecture the flow was trained with.')
+flags.DEFINE_bool('channel_permutation', False,
+                  'Must match training.')
+flags.DEFINE_integer('spline_num_bins', 8, 'spline_film only.')
+flags.DEFINE_float('spline_bound', 5.0, 'spline_film only.')
 
 FLAGS = flags.FLAGS
 
@@ -136,18 +167,22 @@ def build_flow_graph():
                                              n_node=n_node_placeholder,
                                              n_edge=n_edge)
 
-        half_dim = FLAGS.node_embedding_dim // 2
         flow_embedding = NPropertyEmbedding(FLAGS.flow_n_embed_dim,
                                            FLAGS.property_mean,
                                            FLAGS.property_std)
-        grevnet = NConditionedMolecularGNFBlock(
+        grevnet = build_n_conditioned_block(
+            FLAGS.coupling_arch,
             num_timesteps=FLAGS.flow_num_coupling_layers,
-            node_embedding_dim=half_dim,
+            node_embedding_dim=FLAGS.node_embedding_dim,
             hidden_dim=FLAGS.flow_hidden_dim,
             n_embed_dim=FLAGS.flow_n_embed_dim,
             weight_sharing=FLAGS.flow_weight_sharing,
             max_log_scale=FLAGS.flow_max_log_scale,
-            embedding_module=flow_embedding)
+            embedding_module=flow_embedding,
+            channel_permutation=FLAGS.channel_permutation,
+            spline_num_bins=FLAGS.spline_num_bins,
+            spline_bound=FLAGS.spline_bound,
+            attn_kwargs=attention_kwargs_from_flags())
         prior_embedding = NPropertyEmbedding(FLAGS.flow_n_embed_dim,
                                             FLAGS.property_mean,
                                             FLAGS.property_std)
@@ -175,6 +210,7 @@ def build_flow_graph():
 
         sample_n_embedding = prior_embedding(sample_graph_phs)
         mu, sigma = prior_net(sample_n_embedding)
+        sigma = sigma * FLAGS.sigma_scale
         sampled_nodes = sample_conditional_prior(sample_n_node_placeholder,
                                                  mu, sigma)
         sample_graph_phs = sample_graph_phs.replace(nodes=sampled_nodes)
@@ -258,11 +294,54 @@ def build_decoder_graph():
     return sess, generated_embeddings_placeholder, atom_pred, bond_probs
 
 
+def parse_targets():
+    if FLAGS.target_properties:
+        return [float(x) for x in FLAGS.target_properties.split(',')]
+    if FLAGS.target_property != FLAGS.target_property:  # NaN check
+        raise ValueError("--target_property (or --target_properties) is "
+                         "required, e.g. --target_property=0.3 for a molecule "
+                         "with logP ~0.3.")
+    return [FLAGS.target_property]
+
+
+def summarize(rows, train_smiles, target, can_score):
+    """rows: list of (smiles, is_connected, achieved)."""
+    n = len(rows)
+    valid = [r[0] for r in rows if r[0] is not None]
+    connected = [r for r in rows if r[0] is not None and r[1]]
+    connected_smiles = [r[0] for r in connected]
+    unique = set(connected_smiles)
+    novel = [s for s in unique if s not in train_smiles]
+    out = {
+        'target': target,
+        'num_generated': n,
+        'validity': len(valid) / n,
+        'strict_validity': len(connected) / n,
+        'connected_uniqueness': (len(unique) / len(connected)
+                                 if connected else 0.0),
+        'connected_novelty': len(novel) / len(unique) if unique else 0.0,
+        'num_strict_valid': len(connected),
+        'num_unique': len(unique),
+        'num_novel': len(novel),
+    }
+    if can_score:
+        vals = np.array([r[2] for r in connected if r[2] is not None])
+        if len(vals):
+            out.update({
+                'achieved_mean': float(vals.mean()),
+                'achieved_std': float(vals.std()),
+                'achieved_median': float(np.median(vals)),
+                'mean_abs_error': float(np.abs(vals - target).mean()),
+                'bias': float((vals - target).mean()),
+                'num_scored': int(len(vals)),
+            })
+    return out
+
+
 def main(argv):
     del argv
-    if FLAGS.target_property != FLAGS.target_property:  # NaN check
-        raise ValueError("--target_property is required (e.g. --target_property=3.0 "
-                         "for a molecule with dipole moment ~3.0 Debye).")
+    targets = parse_targets()
+    can_score = FLAGS.property_name in DERIVED_PROPERTIES
     random.seed(FLAGS.random_seed)
     np.random.seed(FLAGS.random_seed)
 
@@ -274,145 +353,159 @@ def main(argv):
         for e in train_examples)
     print("Loaded {} training molecules (for N-sampling and novelty "
          "check)".format(len(train_examples)))
-    print("--target_property={} (target_n={})".format(
-        FLAGS.target_property,
-        FLAGS.target_n if FLAGS.target_n > 0 else "sampled"))
+    print("property={} targets={} (target_n={}) sigma_scale={} "
+          "coupling_arch={}".format(
+              FLAGS.property_name, targets,
+              FLAGS.target_n if FLAGS.target_n > 0 else "sampled",
+              FLAGS.sigma_scale, FLAGS.coupling_arch))
+
+    train_reference = None
+    if can_score:
+        ref_vals = []
+        for e in random.sample(train_examples, min(5000, len(train_examples))):
+            ref_vals.append(mol_property(
+                graph_to_mol(e['atom_types'], e['bond_matrix']),
+                FLAGS.property_name))
+        ref_vals = np.array(ref_vals)
+        train_reference = {'mean': float(ref_vals.mean()),
+                           'std': float(ref_vals.std()),
+                           'percentiles_5_25_50_75_95': [
+                               float(x) for x in
+                               np.percentile(ref_vals, [5, 25, 50, 75, 95])]}
+        print("Training-set {} (5000 sample): mean {:.3f} std {:.3f}".format(
+            FLAGS.property_name, train_reference['mean'],
+            train_reference['std']))
 
     flow_sess, sample_n_node_ph, sample_property_ph, generated_embeddings_t = build_flow_graph()
     decoder_sess, embeddings_ph, atom_pred_t, bond_probs_t = build_decoder_graph()
 
-    results = []
-    num_generated = 0
-    while num_generated < FLAGS.num_molecules_to_generate:
-        batch_size = min(FLAGS.sample_batch_size,
-                         FLAGS.num_molecules_to_generate - num_generated)
-        if FLAGS.target_n > 0:
-            batch_n_node = [FLAGS.target_n] * batch_size
-        else:
-            batch_n_node = [random.choice(train_n_node)
-                           for _ in range(batch_size)]
-        batch_property = [FLAGS.target_property] * batch_size
+    per_target, all_rows = [], []
+    for target in targets:
+        rows = []
+        num_generated = 0
+        while num_generated < FLAGS.num_molecules_to_generate:
+            batch_size = min(FLAGS.sample_batch_size,
+                             FLAGS.num_molecules_to_generate - num_generated)
+            if FLAGS.target_n > 0:
+                batch_n_node = [FLAGS.target_n] * batch_size
+            else:
+                batch_n_node = [random.choice(train_n_node)
+                               for _ in range(batch_size)]
+            batch_property = [target] * batch_size
 
-        embeddings = flow_sess.run(
-            generated_embeddings_t,
-            feed_dict={sample_n_node_ph: batch_n_node,
-                      sample_property_ph: batch_property})
+            embeddings = flow_sess.run(
+                generated_embeddings_t,
+                feed_dict={sample_n_node_ph: batch_n_node,
+                          sample_property_ph: batch_property})
 
-        atom_pred, bond_probs = decoder_sess.run(
-            [atom_pred_t, bond_probs_t],
-            feed_dict={embeddings_ph: embeddings})
+            atom_pred, bond_probs = decoder_sess.run(
+                [atom_pred_t, bond_probs_t],
+                feed_dict={embeddings_ph: embeddings})
 
-        n_node_cum = np.cumsum(batch_n_node)
-        start = 0
-        for i, n in enumerate(batch_n_node):
-            end = n_node_cum[i]
-            mol_atom_pred = atom_pred[start:end].tolist()
-            mol_bond_probs = bond_probs[start:end, start:end]
-            start = end
+            n_node_cum = np.cumsum(batch_n_node)
+            start = 0
+            for i, n in enumerate(batch_n_node):
+                end = n_node_cum[i]
+                mol_atom_pred = atom_pred[start:end].tolist()
+                mol_bond_probs = bond_probs[start:end, start:end]
+                start = end
 
-            bond_matrix = decode_bonds_valence_aware(mol_atom_pred,
-                                                     mol_bond_probs)
-            try:
-                mol = graph_to_mol(mol_atom_pred, bond_matrix)
-                smiles = Chem.MolToSmiles(mol)
-                is_connected = len(Chem.GetMolFrags(mol)) == 1
-            except Exception:
-                smiles = None
-                is_connected = None
-            results.append((smiles, is_connected))
+                bond_matrix = decode_bonds_valence_aware(mol_atom_pred,
+                                                         mol_bond_probs)
+                achieved = None
+                try:
+                    mol = graph_to_mol(mol_atom_pred, bond_matrix)
+                    smiles = Chem.MolToSmiles(mol)
+                    is_connected = len(Chem.GetMolFrags(mol)) == 1
+                    if can_score and is_connected:
+                        achieved = mol_property(mol, FLAGS.property_name)
+                except Exception:
+                    smiles = None
+                    is_connected = None
+                rows.append((smiles, is_connected, achieved))
 
-        num_generated += batch_size
-        print("Generated {}/{} molecules".format(
-            num_generated, FLAGS.num_molecules_to_generate))
+            num_generated += batch_size
+            print("target {}: generated {}/{} molecules".format(
+                target, num_generated, FLAGS.num_molecules_to_generate))
 
-    valid = [s for s, c in results if s is not None]
-    connected = [s for s, c in results if s is not None and c]
-    valid_unique = set(valid)
-    valid_novel = [s for s in valid_unique if s not in train_smiles]
-    connected_unique = set(connected)
-    connected_novel = [s for s in connected_unique if s not in train_smiles]
+        summary = summarize(rows, train_smiles, target, can_score)
+        per_target.append(summary)
+        all_rows.append((target, rows))
 
-    n = len(results)
-    validity = len(valid) / n
-    connectivity = (len(connected) / len(valid)) if valid else 0.0
-    strict_validity = len(connected) / n
-    valid_uniqueness = (len(valid_unique) / len(valid)) if valid else 0.0
-    valid_novelty = ((len(valid_novel) / len(valid_unique))
-                     if valid_unique else 0.0)
-    connected_uniqueness = ((len(connected_unique) / len(connected))
-                           if connected else 0.0)
-    connected_novelty = ((len(connected_novel) / len(connected_unique))
-                        if connected_unique else 0.0)
+        # Lines keep the exact wording generate_molecules_n_conditioned.py
+        # prints, so the same grep patterns pick the metrics out of the log.
+        print("\n" + "=" * 60)
+        print("target_property={} sigma_scale={}".format(target,
+                                                         FLAGS.sigma_scale))
+        print("Strict validity (valid AND connected -- a real single "
+              "molecule): {}/{} ({:.1f}%)".format(
+                  summary['num_strict_valid'], summary['num_generated'],
+                  100 * summary['strict_validity']))
+        print("  Uniqueness (of strictly valid): {}/{} ({:.1f}%)".format(
+            summary['num_unique'], summary['num_strict_valid'],
+            100 * summary['connected_uniqueness']))
+        print("  Novelty (of unique strictly-valid, vs. training set): "
+              "{}/{} ({:.1f}%)".format(
+                  summary['num_novel'], summary['num_unique'],
+                  100 * summary['connected_novelty']))
+        if 'achieved_mean' in summary:
+            print("  Achieved {} (strictly valid, n={}): mean {:.3f} std {:.3f} "
+                  "| target {:.3f} bias {:+.3f} MAE {:.3f}".format(
+                      FLAGS.property_name, summary['num_scored'],
+                      summary['achieved_mean'], summary['achieved_std'],
+                      target, summary['bias'], summary['mean_abs_error']))
+        print("=" * 60)
 
-    # NOTE: this does not yet check whether the DECODED molecules
-    # actually hit the requested property value -- that's the real
-    # calibration question flagged when this design was first
-    # discussed (unlike N, a structural guarantee, the property is
-    # only a statistical target with no guarantee any individual
-    # sample lands near it). Computing achieved dipole moment from a
-    # bare SMILES isn't a one-line RDKit descriptor call the way QED
-    # is -- it needs a 3D conformer plus a partial-charge method (e.g.
-    # AllChem.EmbedMolecule + Gasteiger charges), which is a real,
-    # separate follow-up diagnostic, not folded into this script to
-    # avoid shipping a wrong or misleading number.
-
-    print("\n" + "=" * 60)
-    print("Generated {} molecules (target_n={}, target_property={})".format(
-        n, FLAGS.target_n if FLAGS.target_n > 0 else "sampled",
-        FLAGS.target_property))
-    print("Validity (RDKit-sanitizable, fragments allowed): "
-         "{}/{} ({:.1f}%)".format(len(valid), n, 100 * validity))
-    print("  Uniqueness (of valid): {}/{} ({:.1f}%)".format(
-        len(valid_unique), len(valid), 100 * valid_uniqueness))
-    print("  Novelty (of unique valid, vs. training set): "
-         "{}/{} ({:.1f}%)".format(len(valid_novel), len(valid_unique),
-                                  100 * valid_novelty))
-    print("-" * 60)
-    print("Connectivity (of valid, single connected component): "
-         "{}/{} ({:.1f}%)".format(len(connected), len(valid),
-                                  100 * connectivity))
-    print("Strict validity (valid AND connected): {}/{} ({:.1f}%)".format(
-        len(connected), n, 100 * strict_validity))
-    print("  Uniqueness (of strictly valid): {}/{} ({:.1f}%)".format(
-        len(connected_unique), len(connected), 100 * connected_uniqueness))
-    print("  Novelty (of unique strictly-valid, vs. training set): "
-         "{}/{} ({:.1f}%)".format(len(connected_novel), len(connected_unique),
-                                  100 * connected_novelty))
-    print("=" * 60)
-    print("\nSample of strictly-valid generated molecules:")
-    for s in list(connected_unique)[:20]:
-        print(" ", s)
+    overall = {}
+    if can_score:
+        xs = np.array([t['target'] for t in per_target
+                       if 'achieved_mean' in t])
+        ys = np.array([t['achieved_mean'] for t in per_target
+                       if 'achieved_mean' in t])
+        if len(xs) >= 2:
+            slope, intercept = np.polyfit(xs, ys, 1)
+            overall = {'slope_of_achieved_mean_vs_target': float(slope),
+                       'intercept': float(intercept),
+                       'corr_of_target_and_achieved_mean':
+                           float(np.corrcoef(xs, ys)[0, 1])}
+            print("\nAchieved mean vs target across {} targets: slope {:.3f} "
+                  "(1.0 = follows the request exactly, 0 = ignores it), "
+                  "correlation {:.3f}".format(
+                      len(xs), overall['slope_of_achieved_mean_vs_target'],
+                      overall['corr_of_target_and_achieved_mean']))
 
     if FLAGS.save_results_json:
         molecules = []
-        for smiles, is_connected in results:
-            molecules.append({
-                'smiles': smiles,
-                'connected': bool(is_connected) if is_connected is not None else False,
-                'novel': (smiles in connected_novel) if
-                         (smiles is not None and is_connected) else False,
-            })
+        for target, rows in all_rows:
+            for smiles, is_connected, achieved in rows:
+                molecules.append({
+                    'target': target,
+                    'smiles': smiles,
+                    'connected': bool(is_connected) if is_connected is not None else False,
+                    'novel': (smiles not in train_smiles) if
+                             (smiles is not None and is_connected) else False,
+                    'achieved': achieved,
+                })
         payload = {
-            'summary': {
-                'num_generated': n,
+            'config': {
+                'property_name': FLAGS.property_name,
+                'sigma_scale': FLAGS.sigma_scale,
+                'coupling_arch': FLAGS.coupling_arch,
                 'target_n': FLAGS.target_n,
-                'target_property': FLAGS.target_property,
-                'validity': validity,
-                'connectivity': connectivity,
-                'strict_validity': strict_validity,
-                'valid_uniqueness': valid_uniqueness,
-                'valid_novelty': valid_novelty,
-                'connected_uniqueness': connected_uniqueness,
-                'connected_novelty': connected_novelty,
+                'num_molecules_per_target': FLAGS.num_molecules_to_generate,
+                'flow_checkpoint': FLAGS.flow_checkpoint,
             },
+            'train_reference': train_reference,
+            'per_target': per_target,
+            'overall': overall,
             'molecules': molecules,
         }
         os.makedirs(os.path.dirname(FLAGS.save_results_json) or '.',
                    exist_ok=True)
         with open(FLAGS.save_results_json, 'w') as f:
             json.dump(payload, f, indent=2)
-        print("\nSaved {} generated molecules + summary metrics to {}".format(
-            n, FLAGS.save_results_json))
+        print("\nSaved {} generated molecules + per-target summaries to {}".format(
+            len(molecules), FLAGS.save_results_json))
 
 
 if __name__ == '__main__':

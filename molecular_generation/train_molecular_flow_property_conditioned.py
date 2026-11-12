@@ -1,21 +1,27 @@
 """Phase 4 extension: trains the molecular flow conditioned JOINTLY on N
-and a real chemical property (default: 'mu', dipole moment) -- the
+and a per-molecule property (default: 'mu', dipole moment; 'logp' and 'tpsa'
+are derived from the graph, see derived_properties.py) -- the
 property-conditioned counterpart of train_molecular_flow_n_conditioned.py.
 
 Wires together:
   - NPropertyEmbedding (property_conditioning.py): N + property ->
     one embedding, in place of n_conditioning.py's plain NEmbedding.
-  - NConditionedMolecularGNFBlock (molecular_flow.py), unchanged except
-    for its new embedding_module parameter -- everything else (ActNorm,
-    max_log_scale clamping, FiLM wiring) is identical to the N-only
-    conditioned flow.
+  - the coupling block of coupling_variants.build_n_conditioned_block
+    (--coupling_arch film reproduces the original NConditionedMolecularGNFBlock;
+    attn_film is variant A of the architecture study), given that embedding.
   - ConditionalPriorNetwork / conditional_prior_log_prob
-    (conditional_prior.py), also unchanged -- it's agnostic to what
+    (conditional_prior.py), unchanged -- it's agnostic to what
     embedding produced its input, so a joint N+property embedding
     slots in with no modification there either.
 
+Optional, all off by default (which reproduces the original fixed-length
+run): validation loss with early stopping and a best checkpoint
+(--val_data_dir), the train/validation gap probe (--train_probe_batches), and
+training-only embedding noise (--embedding_noise); they behave exactly as in
+train_molecular_flow_n_conditioned.py.
+
 Reads embeddings_*.p chunks produced by
-generate_molecular_embeddings.py --property_name=mu, which are 3-tuples
+generate_molecular_embeddings.py --property_name=<name>, which are 3-tuples
 (node_embeddings, n_node, property_values) instead of the usual
 2-tuple -- MUST be a separate directory from the plain N-conditioned
 flow's embeddings (those are still 2-tuples with no property values).
@@ -51,8 +57,11 @@ absl.logging._warn_preinit_stderr = False
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from conditional_prior import ConditionalPriorNetwork, conditional_prior_log_prob
+from n_conditioning import repeat_rows
 
-from molecular_flow import NConditionedMolecularGNFBlock
+from coupling_variants import (attention_kwargs_from_flags,
+                               build_n_conditioned_block)
+from flow_validation import EarlyStopper, ValidationSet
 from property_conditioning import NPropertyEmbedding
 from tf_helpers import reset_sess, senders_receivers
 
@@ -75,7 +84,7 @@ flags.DEFINE_integer(
 # property_conditioning.py's NPropertyEmbedding docstring). Defaults
 # are for 'mu' (dipole moment): mean=2.6520, std=1.4035.
 flags.DEFINE_string('property_name', 'mu',
-                    'Which QM9 property these embeddings were tagged '
+                    'Which property these embeddings were tagged '
                     'with -- must match --property_name from '
                     'generate_molecular_embeddings.py. Purely for '
                     'logging/bookkeeping here; the actual value is '
@@ -101,6 +110,32 @@ flags.DEFINE_integer('n_embed_dim', 32,
 flags.DEFINE_bool('weight_sharing', False, '')
 flags.DEFINE_float('max_log_scale', 0.25, '')
 
+flags.DEFINE_enum(
+    'coupling_arch', 'film',
+    ['film', 'attn_film', 'deep_film', 'interaction_film', 'spline_film'],
+    'Coupling-network architecture (see coupling_variants.py). "film" is '
+    'the original block. Must match between training and generation.')
+flags.DEFINE_bool(
+    'channel_permutation', False,
+    'Fixed random channel permutation between coupling layers (not '
+    'supported with spline_film). Must match at generation.')
+flags.DEFINE_integer('spline_num_bins', 8, 'spline_film only.')
+flags.DEFINE_float('spline_bound', 5.0,
+                   'spline_film only: spline acts on [-bound, bound], '
+                   'identity outside.')
+
+flags.DEFINE_float(
+    'embedding_noise', 0.0,
+    'Regularisation: add Gaussian noise to every TRAINING embedding, with '
+    'per-dimension std = embedding_noise * (that dimension\'s std over the '
+    'first training file). Validation and probe evaluations are noise-free. '
+    '0 = off. Needs no flag at generation (the noise is training-only).')
+flags.DEFINE_integer(
+    'train_probe_batches', 0,
+    'If > 0 (and validation is on), also evaluate this many noise-free '
+    'batches of the first TRAINING file at every validation step and log the '
+    'train/val gap (loss and prior z-score RMS). 0 = off.')
+
 # Training params.
 flags.DEFINE_string(
     'logdir', 'molecular_generation/test_runs/flow_property_conditioned', '')
@@ -112,6 +147,26 @@ flags.DEFINE_integer('summary_every_n_steps', 25, '')
 flags.DEFINE_integer('save_every_n_steps', 2000, '')
 flags.DEFINE_integer('max_checkpoints_to_keep', 5, '')
 flags.DEFINE_integer('random_seed', 12345, '')
+
+# Validation / early stopping -- all off by default.
+flags.DEFINE_string(
+    'val_data_dir', '',
+    'Directory with property-tagged embeddings_*.p files of the VAL split, '
+    'from generate_molecular_embeddings.py --split val --property_name <name>. '
+    'Empty = no validation.')
+flags.DEFINE_integer('eval_every_n_steps', 2000,
+                     'How often to compute the validation loss.')
+flags.DEFINE_integer(
+    'val_max_batches', 0,
+    'Cap on validation batches per evaluation (0 = the whole val set).')
+flags.DEFINE_integer(
+    'early_stopping_patience', 0,
+    'Stop after this many consecutive evaluations without the validation '
+    'per-node loss improving by more than early_stopping_min_delta. '
+    '0 = never stop early (num_train_iters is then the only limit).')
+flags.DEFINE_float(
+    'early_stopping_min_delta', 0.0,
+    'Minimum improvement in validation per-node loss that counts.')
 
 # Optimizer params -- same defaults as train_molecular_flow_n_conditioned.py.
 flags.DEFINE_string('lr_type', 'fixed_decay', '')
@@ -194,6 +249,16 @@ def transform_example(n_node):
     return edges, receivers, senders, n_edge
 
 
+def embedding_std(train_data_dir):
+    """Per-dimension std of the node embeddings in the first training file;
+    the unit embedding_noise is expressed in."""
+    first = sorted(f for f in os.listdir(train_data_dir)
+                   if f.startswith('embeddings_'))[0]
+    with open(os.path.join(train_data_dir, first), 'rb') as f:
+        node_embeddings = pickle.load(f)[0]
+    return np.maximum(np.std(node_embeddings, axis=0), 1e-6).astype(np.float32)
+
+
 def main(argv):
     del argv
     os.makedirs(FLAGS.logdir, exist_ok=True)
@@ -217,7 +282,16 @@ def main(argv):
                                           name='property_placeholder')
 
     edges, receivers, senders, n_edge = transform_example(n_node_placeholder)
-    graphs_tuple = gn.graphs.GraphsTuple(nodes=node_embeddings_placeholder,
+    # Training-only noise on the flow's input; see the N-conditioned trainer.
+    noise_on = tf.placeholder_with_default(1.0, shape=[],
+                                           name='embedding_noise_on')
+    flow_input = node_embeddings_placeholder
+    if FLAGS.embedding_noise > 0:
+        noise_std = tf.constant(
+            FLAGS.embedding_noise * embedding_std(FLAGS.train_data_dir))
+        flow_input = flow_input + noise_on * noise_std * tf.random_normal(
+            tf.shape(node_embeddings_placeholder))
+    graphs_tuple = gn.graphs.GraphsTuple(nodes=flow_input,
                                          edges=edges,
                                          globals=property_placeholder,
                                          receivers=receivers,
@@ -225,18 +299,22 @@ def main(argv):
                                          n_node=n_node_placeholder,
                                          n_edge=n_edge)
 
-    half_dim = FLAGS.node_embedding_dim // 2
     flow_embedding = NPropertyEmbedding(FLAGS.n_embed_dim,
                                        FLAGS.property_mean,
                                        FLAGS.property_std)
-    grevnet = NConditionedMolecularGNFBlock(
+    grevnet = build_n_conditioned_block(
+        FLAGS.coupling_arch,
         num_timesteps=FLAGS.num_coupling_layers,
-        node_embedding_dim=half_dim,
+        node_embedding_dim=FLAGS.node_embedding_dim,
         hidden_dim=FLAGS.hidden_dim,
         n_embed_dim=FLAGS.n_embed_dim,
         weight_sharing=FLAGS.weight_sharing,
         max_log_scale=FLAGS.max_log_scale,
-        embedding_module=flow_embedding)
+        embedding_module=flow_embedding,
+        channel_permutation=FLAGS.channel_permutation,
+        spline_num_bins=FLAGS.spline_num_bins,
+        spline_bound=FLAGS.spline_bound,
+        attn_kwargs=attention_kwargs_from_flags())
 
     prior_embedding = NPropertyEmbedding(FLAGS.n_embed_dim,
                                         FLAGS.property_mean,
@@ -253,6 +331,11 @@ def main(argv):
         conditional_prior_log_prob(grevnet_reverse_output.nodes,
                                    graphs_tuple.n_node, mu, sigma))
     log_prob_xs = log_prob_zs + log_det_jacobian
+    # Sum of ((z - mu) / sigma)^2; sqrt(this / (nodes * dim)) is the z-score
+    # RMS of the latent under the prior (1.00 = calibrated).
+    zscore_sq = tf.reduce_sum(tf.square(
+        (grevnet_reverse_output.nodes - repeat_rows(mu, graphs_tuple.n_node)) /
+        repeat_rows(sigma, graphs_tuple.n_node)))
     total_loss = -1 * log_prob_xs
     per_node_loss = total_loss / tf.cast(tf.reduce_sum(graphs_tuple.n_node),
                                          tf.float32)
@@ -331,6 +414,34 @@ def main(argv):
                                                      FLAGS.train_batch_size,
                                                      FLAGS.train_epochs)
 
+    val_set, stopper, best_saver, probe_set = None, None, None, None
+    best_path = os.path.join(FLAGS.logdir, 'best', 'best')
+    if FLAGS.val_data_dir:
+        val_set = ValidationSet(FLAGS.val_data_dir, FLAGS.train_batch_size,
+                                FLAGS.val_max_batches)
+        stopper = EarlyStopper(FLAGS.early_stopping_patience,
+                               FLAGS.early_stopping_min_delta)
+        best_saver = tf.train.Saver(max_to_keep=1)
+        os.makedirs(os.path.dirname(best_path), exist_ok=True)
+        val_tensors = {
+            "total_loss": total_loss,
+            "log_prob_zs": log_prob_zs,
+            "log_det_jacobian": log_det_jacobian,
+            "zscore_sq": zscore_sq,
+        }
+        if FLAGS.train_probe_batches > 0:
+            probe_set = ValidationSet(FLAGS.train_data_dir,
+                                      FLAGS.train_batch_size,
+                                      FLAGS.train_probe_batches, max_files=1)
+            logger.info("Train probe: {} noise-free molecules from the first "
+                        "training file.".format(probe_set.num_molecules))
+        noise_off = {noise_on: 0.0}
+        logger.info("Validation on {} molecules every {} steps; early "
+                    "stopping patience={} min_delta={}".format(
+                        val_set.num_molecules, FLAGS.eval_every_n_steps,
+                        FLAGS.early_stopping_patience,
+                        FLAGS.early_stopping_min_delta))
+
     for iteration in range(FLAGS.num_train_iters + 1):
         node_embeddings, n_node, property_values = dataset_generator.train_batch()
         feed_dict = {
@@ -372,6 +483,67 @@ def main(argv):
             saver.save(sess, os.path.join(FLAGS.logdir, 'checkpoints'),
                       global_step=global_step)
 
+        if (val_set is not None and iteration > 0 and
+                iteration % FLAGS.eval_every_n_steps == 0):
+            val = val_set.evaluate(sess, node_embeddings_placeholder,
+                                   n_node_placeholder, val_tensors,
+                                   extra_feed=noise_off,
+                                   property_placeholder=property_placeholder)
+            val_loss = val["total_loss"]
+            is_new_best, should_stop = stopper.update(val_loss, iteration)
+            if is_new_best:
+                best_saver.save(sess, best_path)
+            logger.info(
+                "VALIDATION iteration {} per_node_loss={:.4f} "
+                "log_prob_zs/node={:.4f} log_det_jacobian/node={:.4f} | "
+                "best={:.4f} at {} | evals without improvement: {}/{}".format(
+                    iteration, val_loss, val["log_prob_zs"],
+                    val["log_det_jacobian"], stopper.best, stopper.best_step,
+                    stopper.evals_since_improvement,
+                    FLAGS.early_stopping_patience))
+            val_zrms = float(np.sqrt(val["zscore_sq"] /
+                                     FLAGS.node_embedding_dim))
+            if probe_set is not None:
+                probe = probe_set.evaluate(
+                    sess, node_embeddings_placeholder, n_node_placeholder,
+                    val_tensors, extra_feed=noise_off,
+                    property_placeholder=property_placeholder)
+                probe_zrms = float(np.sqrt(probe["zscore_sq"] /
+                                           FLAGS.node_embedding_dim))
+                logger.info(
+                    "GAP iteration {} val_loss={:.4f} train_probe_loss={:.4f} "
+                    "loss_gap={:+.4f} | val_zRMS={:.4f} "
+                    "train_probe_zRMS={:.4f} zRMS_gap={:+.4f}".format(
+                        iteration, val_loss, probe["total_loss"],
+                        val_loss - probe["total_loss"], val_zrms, probe_zrms,
+                        val_zrms - probe_zrms))
+                if WANDB_AVAILABLE:
+                    wandb.log({
+                        "gap/loss": float(val_loss - probe["total_loss"]),
+                        "gap/zrms": val_zrms - probe_zrms,
+                        "probe/per_node_loss": float(probe["total_loss"]),
+                        "probe/zrms": probe_zrms,
+                    }, step=iteration)
+            if WANDB_AVAILABLE:
+                wandb.log({
+                    "val/zrms": val_zrms,
+                    "val/per_node_loss": float(val_loss),
+                    "val/log_prob_zs_per_node": float(val["log_prob_zs"]),
+                    "val/log_det_per_node": float(val["log_det_jacobian"]),
+                    "val/best_per_node_loss": float(stopper.best),
+                }, step=iteration)
+            if should_stop:
+                logger.info(
+                    "Early stopping at iteration {}: no validation "
+                    "improvement > {} for {} evaluations.".format(
+                        iteration, FLAGS.early_stopping_min_delta,
+                        FLAGS.early_stopping_patience))
+                break
+
+    if stopper is not None:
+        logger.info("Best validation per_node_loss {:.4f} at iteration {}; "
+                    "checkpoint: {}".format(stopper.best, stopper.best_step,
+                                            best_path))
     logger.info("Training complete.")
 
 

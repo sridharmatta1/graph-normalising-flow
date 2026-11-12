@@ -29,14 +29,19 @@ class ValidationSet(object):
                 "No embeddings_*.p files in {}. Run "
                 "generate_molecular_embeddings.py --split val first.".format(
                     val_data_dir))
-        node_chunks, n_node_chunks = [], []
+        node_chunks, n_node_chunks, property_chunks = [], [], []
         for name in files:
             with open(os.path.join(val_data_dir, name), 'rb') as f:
                 d = pickle.load(f)
             node_chunks.append(d[0])
             n_node_chunks.append(d[1])
+            if len(d) > 2:
+                property_chunks.append(d[2])
         self.node_embeddings = np.concatenate(node_chunks, axis=0)
         self.n_node = np.concatenate(n_node_chunks, axis=0)
+        # Only the property-tagged (3-tuple) files carry per-molecule values.
+        self.property_values = (np.concatenate(property_chunks, axis=0)
+                                if len(property_chunks) == len(files) else None)
         self.n_node_cs = np.concatenate([[0], np.cumsum(self.n_node)])
         self.batch_size = batch_size
         num_batches = len(self.n_node) // batch_size
@@ -56,20 +61,30 @@ class ValidationSet(object):
                    self.n_node[lo:hi])
 
     def evaluate(self, sess, node_embeddings_placeholder, n_node_placeholder,
-                 batch_sum_tensors, extra_feed=None):
+                 batch_sum_tensors, extra_feed=None,
+                 property_placeholder=None):
         """batch_sum_tensors: {name: scalar tensor that is a SUM over the
         batch} (total_loss, log_prob_zs, log_det_jacobian). Returns
         {name: that sum divided by the total node count over the whole
         validation set}, i.e. directly comparable to the training
         per_node_loss. extra_feed: additional placeholders fed on every
-        batch (e.g. switching training-only noise off).
+        batch (e.g. switching training-only noise off). property_placeholder:
+        if given, each batch's per-molecule property values are fed to it
+        (needs property-tagged files).
         """
+        if property_placeholder is not None and self.property_values is None:
+            raise ValueError("property_placeholder given but the embeddings "
+                             "files carry no property values.")
         sums = {k: 0.0 for k in batch_sum_tensors}
         num_nodes = 0
-        for node_embeddings, n_node in self.batches():
+        for b, (node_embeddings, n_node) in enumerate(self.batches()):
             feed = dict(extra_feed or {})
             feed[node_embeddings_placeholder] = node_embeddings
             feed[n_node_placeholder] = n_node
+            if property_placeholder is not None:
+                lo = b * self.batch_size
+                feed[property_placeholder] = self.property_values[
+                    lo:lo + self.batch_size]
             values = sess.run(batch_sum_tensors, feed_dict=feed)
             for k, v in values.items():
                 sums[k] += float(v)
