@@ -133,6 +133,15 @@ flags.DEFINE_float('spline_bound', 5.0, 'spline_film only.')
 FLAGS = flags.FLAGS
 
 
+def gpu_config():
+    """Both sessions (flow, decoder) live in one process; without allow_growth
+    the first reserves nearly the whole GPU and the second then fails to start
+    cuBLAS ("Blas GEMM launch failed") on a shared or smaller GPU."""
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    return config
+
+
 def transform_example(n_node):
     edges, receivers, senders, n_edge = None, None, None, None
     senders, receivers = senders_receivers(n_node)
@@ -217,7 +226,7 @@ def build_flow_graph():
 
         generated = grevnet(sample_graph_phs, inverse=False)
 
-        sess = reset_sess()
+        sess = reset_sess(gpu_config())
         saver = tf.train.Saver()
         print("Restoring N+property-conditioned flow from {}".format(
             FLAGS.flow_checkpoint))
@@ -285,7 +294,7 @@ def build_decoder_graph():
             num_refine_steps=FLAGS.p2_num_bond_refine_steps)
         bond_probs = tf.nn.softmax(bond_logits, axis=-1)
 
-        sess = reset_sess()
+        sess = reset_sess(gpu_config())
         saver = tf.train.Saver()
         print("Restoring Phase 2 decoder from {}".format(
             FLAGS.phase2_checkpoint))
